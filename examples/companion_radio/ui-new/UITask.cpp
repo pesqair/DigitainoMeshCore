@@ -58,10 +58,55 @@
 #endif
 #define PRESET_GPS_INDEX 7
 
-static const char* preset_messages[PRESET_MSG_COUNT] = {
+// Runtime preset storage - loaded from /presets.txt or compile-time defaults
+#define PRESET_MAX_LEN 48
+static char preset_buf[PRESET_MSG_COUNT][PRESET_MAX_LEN];
+static const char* preset_defaults[PRESET_MSG_COUNT] = {
   PRESET_MSG_1, PRESET_MSG_2, PRESET_MSG_3, PRESET_MSG_4,
   PRESET_MSG_5, PRESET_MSG_6, PRESET_MSG_7, PRESET_MSG_8
 };
+static const char* preset_messages[PRESET_MSG_COUNT];
+
+static void loadPresetsFromFile() {
+  // Initialize with compile-time defaults
+  for (int i = 0; i < PRESET_MSG_COUNT; i++) {
+    strncpy(preset_buf[i], preset_defaults[i], PRESET_MAX_LEN - 1);
+    preset_buf[i][PRESET_MAX_LEN - 1] = '\0';
+    preset_messages[i] = preset_buf[i];
+  }
+
+  // Try to load from /presets.txt (one message per line)
+#if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
+  File f = InternalFS.open("/presets.txt", FILE_O_READ);
+#elif defined(RP2040_PLATFORM)
+  File f = LittleFS.open("/presets.txt", "r");
+#elif defined(ESP32)
+  File f = SPIFFS.open("/presets.txt", "r", false);
+#else
+  File f;
+#endif
+  if (f) {
+    int idx = 0;
+    while (idx < PRESET_MSG_COUNT && f.available()) {
+      char line[PRESET_MAX_LEN];
+      int len = 0;
+      while (len < PRESET_MAX_LEN - 1 && f.available()) {
+        char ch = f.read();
+        if (ch == '\n') break;
+        if (ch == '\r') continue;
+        line[len++] = ch;
+      }
+      line[len] = '\0';
+      if (len > 0) {
+        strncpy(preset_buf[idx], line, PRESET_MAX_LEN - 1);
+        preset_buf[idx][PRESET_MAX_LEN - 1] = '\0';
+        idx++;
+      }
+    }
+    f.close();
+    MESH_DEBUG_PRINTLN("Loaded presets from /presets.txt");
+  }
+}
 
 #include "icons.h"
 
@@ -292,8 +337,8 @@ public:
       display.setTextSize(1);
       display.drawTextCentered(display.width() / 2, 18, "-- Quick Msg --");
 
-      // items: PRESET_MSG_COUNT presets + "[Compose...]" + "[Reply DM...]"
-      int total_items = PRESET_MSG_COUNT + 2;
+      // items: presets + [Compose] + [Reply DM] + [Send GPS DM] + [Channel Msg]
+      int total_items = PRESET_MSG_COUNT + 4;
       int visible = 3;
       int scroll_top = 0;
       if (_preset_sel >= visible) scroll_top = _preset_sel - visible + 1;
@@ -317,8 +362,12 @@ public:
           }
         } else if (i == PRESET_MSG_COUNT) {
           display.print("[Compose...]");
-        } else {
+        } else if (i == PRESET_MSG_COUNT + 1) {
           display.print("[Reply DM...]");
+        } else if (i == PRESET_MSG_COUNT + 2) {
+          display.print("[Send GPS DM...]");
+        } else {
+          display.print("[Channel Msg...]");
         }
       }
     } else if (_page == HomePage::RECENT) {
@@ -539,7 +588,7 @@ public:
       return false;
     }
     if (_page == HomePage::PRESETS) {
-      int total_items = PRESET_MSG_COUNT + 2;
+      int total_items = PRESET_MSG_COUNT + 4;
       if (c == KEY_UP) {
         _preset_sel = (_preset_sel + total_items - 1) % total_items;
         return true;
@@ -556,7 +605,17 @@ public:
         }
         if (_preset_sel == PRESET_MSG_COUNT + 1) {
           // "[Reply DM...]" selected
-          _task->gotoContactSelect();
+          _task->gotoContactSelect(false);
+          return true;
+        }
+        if (_preset_sel == PRESET_MSG_COUNT + 2) {
+          // "[Send GPS DM...]" selected
+          _task->gotoContactSelect(true);
+          return true;
+        }
+        if (_preset_sel == PRESET_MSG_COUNT + 3) {
+          // "[Channel Msg...]" selected
+          _task->gotoChannelSelect();
           return true;
         }
         // Send preset message
@@ -742,6 +801,8 @@ class ComposeScreen : public UIScreen {
   uint8_t _kb_row, _kb_col;
   bool _dm_mode;
   ContactInfo _dm_contact;
+  int _channel_idx;       // -1 = default (ch 0), >=0 = specific channel
+  char _channel_name[32]; // display name for selected channel
 
 public:
   ComposeScreen(UITask* task) : _task(task) {
@@ -754,11 +815,18 @@ public:
     _kb_row = 0;
     _kb_col = 0;
     _dm_mode = false;
+    _channel_idx = -1;
   }
 
   void setDMTarget(const ContactInfo& contact) {
     _dm_mode = true;
     _dm_contact = contact;
+  }
+
+  void setChannel(int idx, const char* name) {
+    _channel_idx = idx;
+    strncpy(_channel_name, name, sizeof(_channel_name) - 1);
+    _channel_name[sizeof(_channel_name) - 1] = '\0';
   }
 
   int render(DisplayDriver& display) override {
@@ -770,11 +838,15 @@ public:
       char prefix[32];
       snprintf(prefix, sizeof(prefix), "DM:%s ", _dm_contact.name);
       display.print(prefix);
+    } else if (_channel_idx >= 0) {
+      char prefix[32];
+      snprintf(prefix, sizeof(prefix), "#%s ", _channel_name);
+      display.print(prefix);
     } else {
       display.print("> ");
     }
     // Show last portion of text that fits on screen
-    int max_chars = _dm_mode ? 14 : 19;
+    int max_chars = (_dm_mode || _channel_idx >= 0) ? 14 : 19;
     if (_compose_len <= max_chars) {
       display.print(_compose_buf);
     } else {
@@ -855,17 +927,18 @@ public:
             _task->notify(UIEventType::ack);
             _task->showAlert(result > 0 ? "DM Sent!" : "DM failed", 800);
           } else {
+            int ch_idx = (_channel_idx >= 0) ? _channel_idx : 0;
             ChannelDetails ch_det;
-            if (the_mesh.getChannel(0, ch_det)) {
+            if (the_mesh.getChannel(ch_idx, ch_det)) {
               uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
               bool ok = the_mesh.sendGroupMessage(ts, ch_det.channel,
                             the_mesh.getNodePrefs()->node_name, _compose_buf, _compose_len);
-              the_mesh.queueSentChannelMessage(0, ts, _compose_buf, _compose_len);
+              the_mesh.queueSentChannelMessage(ch_idx, ts, _compose_buf, _compose_len);
               _task->addToMsgLog("You", _compose_buf, true);
               _task->notify(UIEventType::ack);
               _task->showAlert(ok ? "Sent!" : "Send failed", 800);
             } else {
-              _task->showAlert("No channel 0", 800);
+              _task->showAlert("No channel", 800);
             }
           }
         }
@@ -899,9 +972,12 @@ class ContactSelectScreen : public UIScreen {
   UITask* _task;
   uint8_t _contact_sel;
   int _num_contacts;
+  bool _gps_mode;  // true = send GPS DM, false = compose DM
 
 public:
-  ContactSelectScreen(UITask* task) : _task(task), _contact_sel(0), _num_contacts(0) {}
+  ContactSelectScreen(UITask* task) : _task(task), _contact_sel(0), _num_contacts(0), _gps_mode(false) {}
+
+  void setGPSMode(bool gps) { _gps_mode = gps; }
 
   int render(DisplayDriver& display) override {
     _num_contacts = the_mesh.getNumContacts();
@@ -909,7 +985,11 @@ public:
     display.setTextSize(1);
     display.setColor(DisplayDriver::YELLOW);
     char hdr[32];
-    snprintf(hdr, sizeof(hdr), "-- Contacts (%d) --", _num_contacts);
+    if (_gps_mode) {
+      snprintf(hdr, sizeof(hdr), "-- GPS DM (%d) --", _num_contacts);
+    } else {
+      snprintf(hdr, sizeof(hdr), "-- Contacts (%d) --", _num_contacts);
+    }
     display.drawTextCentered(display.width() / 2, 18, hdr);
 
     if (_num_contacts == 0) {
@@ -960,7 +1040,95 @@ public:
     if (c == KEY_ENTER) {
       ContactInfo ci;
       if (the_mesh.getContactByIdx(_contact_sel, ci)) {
-        _task->startDMCompose(ci);
+        if (_gps_mode) {
+          _task->sendGPSDM(ci);
+        } else {
+          _task->startDMCompose(ci);
+        }
+      }
+      return true;
+    }
+    if (c == KEY_CANCEL) {
+      _task->gotoHomeScreen();
+      return true;
+    }
+    return false;
+  }
+};
+
+class ChannelSelectScreen : public UIScreen {
+  UITask* _task;
+  uint8_t _channel_sel;
+  int _num_channels;
+
+public:
+  ChannelSelectScreen(UITask* task) : _task(task), _channel_sel(0), _num_channels(0) {}
+
+  int render(DisplayDriver& display) override {
+    // Count available channels
+    _num_channels = 0;
+    ChannelDetails ch;
+    while (_num_channels < 40 && the_mesh.getChannel(_num_channels, ch)) {
+      _num_channels++;
+    }
+
+    display.setTextSize(1);
+    display.setColor(DisplayDriver::YELLOW);
+    char hdr[32];
+    snprintf(hdr, sizeof(hdr), "-- Channels (%d) --", _num_channels);
+    display.drawTextCentered(display.width() / 2, 18, hdr);
+
+    if (_num_channels == 0) {
+      display.setColor(DisplayDriver::LIGHT);
+      display.drawTextCentered(display.width() / 2, 38, "No channels");
+    } else {
+      if (_channel_sel >= _num_channels) _channel_sel = 0;
+      int visible = 3;
+      int scroll_top = 0;
+      if (_channel_sel >= visible) scroll_top = _channel_sel - visible + 1;
+      if (scroll_top > _num_channels - visible) scroll_top = _num_channels - visible;
+      if (scroll_top < 0) scroll_top = 0;
+
+      int y = 30;
+      for (int i = scroll_top; i < scroll_top + visible && i < _num_channels; i++, y += 12) {
+        if (i == _channel_sel) {
+          display.setColor(DisplayDriver::YELLOW);
+          display.setCursor(0, y);
+          display.print(">");
+        }
+        display.setColor(i == _channel_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+        display.setCursor(8, y);
+        ChannelDetails cd;
+        if (the_mesh.getChannel(i, cd)) {
+          char label[36];
+          snprintf(label, sizeof(label), "#%s", cd.name);
+          display.print(label);
+        }
+      }
+    }
+    return 5000;
+  }
+
+  bool handleInput(char c) override {
+    if (_num_channels == 0) {
+      if (c == KEY_CANCEL || c == KEY_ENTER) {
+        _task->gotoHomeScreen();
+        return true;
+      }
+      return false;
+    }
+    if (c == KEY_UP) {
+      _channel_sel = (_channel_sel + _num_channels - 1) % _num_channels;
+      return true;
+    }
+    if (c == KEY_DOWN) {
+      _channel_sel = (_channel_sel + 1) % _num_channels;
+      return true;
+    }
+    if (c == KEY_ENTER) {
+      ChannelDetails cd;
+      if (the_mesh.getChannel(_channel_sel, cd)) {
+        _task->startChannelCompose(_channel_sel, cd.name);
       }
       return true;
     }
@@ -1022,11 +1190,14 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   ui_started_at = millis();
   _alert_expiry = 0;
 
+  loadPresetsFromFile();
+
   splash = new SplashScreen(this);
   home = new HomeScreen(this, &rtc_clock, sensors, node_prefs);
   msg_preview = new MsgPreviewScreen(this, &rtc_clock);
   compose = new ComposeScreen(this);
   contact_select = new ContactSelectScreen(this);
+  channel_select = new ChannelSelectScreen(this);
   setCurrScreen(splash);
 }
 
@@ -1121,14 +1292,49 @@ void UITask::gotoComposeScreen() {
   setCurrScreen(compose);
 }
 
-void UITask::gotoContactSelect() {
+void UITask::gotoContactSelect(bool gps_mode) {
+  ((ContactSelectScreen*)contact_select)->setGPSMode(gps_mode);
   setCurrScreen(contact_select);
+}
+
+void UITask::gotoChannelSelect() {
+  setCurrScreen(channel_select);
 }
 
 void UITask::startDMCompose(const ContactInfo& contact) {
   ((ComposeScreen*)compose)->reset();
   ((ComposeScreen*)compose)->setDMTarget(contact);
   setCurrScreen(compose);
+}
+
+void UITask::startChannelCompose(int channel_idx, const char* channel_name) {
+  ((ComposeScreen*)compose)->reset();
+  ((ComposeScreen*)compose)->setChannel(channel_idx, channel_name);
+  setCurrScreen(compose);
+}
+
+void UITask::sendGPSDM(const ContactInfo& contact) {
+#if ENV_INCLUDE_GPS == 1
+  LocationProvider* nmea = _sensors->getLocationProvider();
+  if (nmea != NULL && nmea->isValid()) {
+    char gps_text[48];
+    snprintf(gps_text, sizeof(gps_text), "GPS: %.6f, %.6f",
+             nmea->getLatitude() / 1000000.0, nmea->getLongitude() / 1000000.0);
+    uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
+    uint32_t expected_ack = 0;
+    uint32_t est_timeout = 0;
+    int result = the_mesh.sendMessage(contact, ts, 0, gps_text, expected_ack, est_timeout);
+    the_mesh.queueSentDirectMessage(contact, ts, gps_text);
+    addToMsgLog("You", gps_text, true);
+    notify(UIEventType::ack);
+    showAlert(result > 0 ? "GPS DM Sent!" : "GPS DM failed", 800);
+  } else {
+    showAlert("No GPS fix", 800);
+  }
+#else
+  showAlert("GPS not enabled", 800);
+#endif
+  gotoHomeScreen();
 }
 
 void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent) {

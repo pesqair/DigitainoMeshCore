@@ -54,6 +54,7 @@ class UITask : public AbstractUITask {
   UIScreen* msg_preview;
   UIScreen* compose;
   UIScreen* contact_select;
+  UIScreen* channel_select;
   UIScreen* curr;
 
   void userLedHandler();
@@ -90,8 +91,11 @@ public:
 
   void gotoHomeScreen() { setCurrScreen(home); }
   void gotoComposeScreen();
-  void gotoContactSelect();
+  void gotoContactSelect(bool gps_mode = false);
+  void gotoChannelSelect();
   void startDMCompose(const ContactInfo& contact);
+  void startChannelCompose(int channel_idx, const char* channel_name);
+  void sendGPSDM(const ContactInfo& contact);
   void addToMsgLog(const char* origin, const char* text, bool is_sent);
   void showAlert(const char* text, int duration_millis);
   int  getMsgCount() const { return _msgcount; }
