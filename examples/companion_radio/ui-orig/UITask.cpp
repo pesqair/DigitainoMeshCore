@@ -126,7 +126,7 @@ void UITask::clearMsgPreview() {
   _need_refresh = true;
 }
 
-void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount) {
+void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount, int channel_idx) {
   _msgcount = msgcount;
 
   if (path_len == 0xFF) {

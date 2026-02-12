@@ -83,6 +83,9 @@ public:
     char origin[24];
     char text[80];
     bool is_sent;
+    uint8_t path_len;     // hops: 0=direct/self, 0xFF=DM, else=flood hops
+    int channel_idx;      // >=0 = channel msg (reply on this channel), -1 = DM
+    char contact_name[24]; // for DM: sender name to reply to
   };
   #define MSG_LOG_SIZE 16
   MessageLogEntry _msg_log[MSG_LOG_SIZE];
@@ -96,7 +99,7 @@ public:
   void startDMCompose(const ContactInfo& contact);
   void startChannelCompose(int channel_idx, const char* channel_name);
   void sendGPSDM(const ContactInfo& contact);
-  void addToMsgLog(const char* origin, const char* text, bool is_sent);
+  void addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len = 0, int channel_idx = -1, const char* contact_name = NULL);
   void showAlert(const char* text, int duration_millis);
   int  getMsgCount() const { return _msgcount; }
   bool hasDisplay() const { return _display != NULL; }
@@ -109,7 +112,7 @@ public:
 
   // from AbstractUITask
   void msgRead(int msgcount) override;
-  void newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount) override;
+  void newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount, int channel_idx = -1) override;
   void notify(UIEventType t = UIEventType::none) override;
   void loop() override;
 

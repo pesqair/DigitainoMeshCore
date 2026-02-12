@@ -535,7 +535,7 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
     channel_name = channel_details.name;
   }
   if (_ui) {
-    _ui->newMsg(path_len, channel_name, text, offline_queue_len);
+    _ui->newMsg(path_len, channel_name, text, offline_queue_len, channel_idx);
     if (!_prefs.buzzer_quiet) _ui->notify(UIEventType::channelMessage); //buzz if enabled
   }
 #endif
