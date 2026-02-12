@@ -903,7 +903,7 @@ class ComposeScreen : public UIScreen {
   static const uint8_t KB_ROWS = 5;
   static const uint8_t KB_COLS = 10;
   static const char KB_CHARS[KB_ROWS * KB_COLS];
-  // special keys: \x01=SND, \x02=SHIFT, \x03=DEL
+  // special keys: \x01=SND, \x02=SHIFT, \x04=ESC (back button = backspace)
 
   UITask* _task;
   char _compose_buf[MAX_TEXT_LEN];
@@ -1004,9 +1004,9 @@ public:
         } else if (ch == '\x02') {
           display.setCursor(x + 1, y + 1);
           display.print(_caps ? "AA" : "aa");
-        } else if (ch == '\x03') {
+        } else if (ch == '\x04') {
           display.setCursor(x + 1, y + 1);
-          display.print("DEL");
+          display.print("ESC");
         } else if (ch == ' ') {
           display.setCursor(x + 2, y + 1);
           display.print("_");
@@ -1051,7 +1051,7 @@ public:
             uint32_t expected_ack = 0;
             uint32_t est_timeout = 0;
             int result = the_mesh.sendMessage(_dm_contact, ts, 0, _compose_buf, expected_ack, est_timeout);
-            the_mesh.queueSentDirectMessage(_dm_contact, ts, _compose_buf);
+            // Note: DM sync to companion app not supported - protocol has no outgoing flag
             _task->addToMsgLog("You", _compose_buf, true, 0, -1, _dm_contact.name);
             _task->notify(UIEventType::ack);
             _task->showAlert(result > 0 ? "DM Sent!" : "DM failed", 800);
@@ -1080,12 +1080,10 @@ public:
         _caps = !_caps;
         return true;
       }
-      if (ch == '\x03') {
-        // DEL: backspace
-        if (_compose_len > 0) {
-          _compose_len--;
-          _compose_buf[_compose_len] = '\0';
-        }
+      if (ch == '\x04') {
+        // ESC: exit compose immediately
+        reset();
+        _task->gotoHomeScreen();
         return true;
       }
       // Append character (apply case for letters)
@@ -1307,13 +1305,13 @@ public:
 };
 
 // QWERTY keyboard layout
-// \x01=SND  \x02=SHIFT  \x03=DEL
+// \x01=SND  \x02=SHIFT  \x04=ESC  (back button = backspace)
 const char ComposeScreen::KB_CHARS[KB_ROWS * KB_COLS] = {
   'Q','W','E','R','T','Y','U','I','O','P',
   'A','S','D','F','G','H','J','K','L',' ',
   'Z','X','C','V','B','N','M',',','.','-',
   '0','1','2','3','4','5','6','7','8','9',
-  '\x02','\x03','!','?','@','\'',':',';',' ','\x01'
+  '\x02','@','!','?','#','\'',':',';','\x04','\x01'
 };
 
 void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* node_prefs) {
@@ -1500,7 +1498,7 @@ void UITask::sendGPSDM(const ContactInfo& contact) {
     uint32_t expected_ack = 0;
     uint32_t est_timeout = 0;
     int result = the_mesh.sendMessage(contact, ts, 0, gps_text, expected_ack, est_timeout);
-    the_mesh.queueSentDirectMessage(contact, ts, gps_text);
+    // Note: DM sync to companion app not supported - protocol has no outgoing flag
     addToMsgLog("You", gps_text, true, 0, -1, contact.name);
     notify(UIEventType::ack);
     showAlert(result > 0 ? "GPS DM Sent!" : "GPS DM failed", 800);
