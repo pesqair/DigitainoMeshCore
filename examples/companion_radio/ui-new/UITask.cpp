@@ -99,6 +99,9 @@ public:
     display.setTextSize(1);
     display.drawTextCentered(display.width()/2, 42, FIRMWARE_BUILD_DATE);
 
+    display.setColor(DisplayDriver::YELLOW);
+    display.drawTextCentered(display.width()/2, 54, "custom digitaino fw");
+
     return 1000;
   }
 
