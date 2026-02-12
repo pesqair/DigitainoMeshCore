@@ -21,6 +21,7 @@
 
 #include "../AbstractUITask.h"
 #include "../NodePrefs.h"
+#include <helpers/ContactInfo.h>
 
 class UITask : public AbstractUITask {
   DisplayDriver* _display;
@@ -52,6 +53,7 @@ class UITask : public AbstractUITask {
   UIScreen* home;
   UIScreen* msg_preview;
   UIScreen* compose;
+  UIScreen* contact_select;
   UIScreen* curr;
 
   void userLedHandler();
@@ -70,11 +72,27 @@ public:
     next_batt_chck = _next_refresh = 0;
     ui_started_at = 0;
     curr = NULL;
+    _msg_log_count = 0;
+    _msg_log_next = 0;
   }
   void begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* node_prefs);
 
+  struct MessageLogEntry {
+    uint32_t timestamp;
+    char origin[24];
+    char text[80];
+    bool is_sent;
+  };
+  #define MSG_LOG_SIZE 16
+  MessageLogEntry _msg_log[MSG_LOG_SIZE];
+  int _msg_log_count;
+  int _msg_log_next;
+
   void gotoHomeScreen() { setCurrScreen(home); }
   void gotoComposeScreen();
+  void gotoContactSelect();
+  void startDMCompose(const ContactInfo& contact);
+  void addToMsgLog(const char* origin, const char* text, bool is_sent);
   void showAlert(const char* text, int duration_millis);
   int  getMsgCount() const { return _msgcount; }
   bool hasDisplay() const { return _display != NULL; }

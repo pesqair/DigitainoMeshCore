@@ -112,6 +112,7 @@ public:
 class HomeScreen : public UIScreen {
   enum HomePage {
     FIRST,
+    MESSAGES,
     PRESETS,
     RECENT,
     RADIO,
@@ -133,6 +134,7 @@ class HomeScreen : public UIScreen {
   NodePrefs* _node_prefs;
   uint8_t _page;
   uint8_t _preset_sel;
+  uint8_t _msg_sel;
   bool _shutdown_init;
   AdvertPath recent[UI_RECENT_LIST_SIZE];
 
@@ -193,7 +195,7 @@ class HomeScreen : public UIScreen {
 public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, SensorManager* sensors, NodePrefs* node_prefs)
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
-       _preset_sel(0), _shutdown_init(false), sensors_lpp(200) {  }
+       _preset_sel(0), _msg_sel(0), _shutdown_init(false), sensors_lpp(200) {  }
 
   void poll() override {
     if (_shutdown_init && !_task->isButtonPressed()) {  // must wait for USR button to be released
@@ -248,13 +250,47 @@ public:
         sprintf(tmp, "Pin:%d", the_mesh.getBLEPin());
         display.drawTextCentered(display.width() / 2, 43, tmp);
       }
+    } else if (_page == HomePage::MESSAGES) {
+      display.setColor(DisplayDriver::YELLOW);
+      display.setTextSize(1);
+      char hdr[32];
+      snprintf(hdr, sizeof(hdr), "-- Messages (%d) --", _task->_msg_log_count);
+      display.drawTextCentered(display.width() / 2, 18, hdr);
+
+      if (_task->_msg_log_count == 0) {
+        display.setColor(DisplayDriver::LIGHT);
+        display.drawTextCentered(display.width() / 2, 38, "No messages yet");
+      } else {
+        int visible = 3;
+        int total = _task->_msg_log_count;
+        int scroll_top = 0;
+        if (_msg_sel >= visible) scroll_top = _msg_sel - visible + 1;
+        if (scroll_top > total - visible) scroll_top = total - visible;
+        if (scroll_top < 0) scroll_top = 0;
+
+        int y = 30;
+        for (int v = scroll_top; v < scroll_top + visible && v < total; v++, y += 12) {
+          // Map display index to circular buffer: newest first
+          int buf_idx = (_task->_msg_log_next - 1 - v + MSG_LOG_SIZE) % MSG_LOG_SIZE;
+          auto& entry = _task->_msg_log[buf_idx];
+          display.setColor(entry.is_sent ? DisplayDriver::YELLOW : DisplayDriver::GREEN);
+          if (v == _msg_sel) {
+            display.setCursor(0, y);
+            display.print(">");
+          }
+          display.setCursor(8, y);
+          char line[40];
+          snprintf(line, sizeof(line), "%s: %s", entry.origin, entry.text);
+          display.print(line);
+        }
+      }
     } else if (_page == HomePage::PRESETS) {
       display.setColor(DisplayDriver::YELLOW);
       display.setTextSize(1);
       display.drawTextCentered(display.width() / 2, 18, "-- Quick Msg --");
 
-      // 9 items: PRESET_MSG_COUNT presets + "[Compose...]"
-      int total_items = PRESET_MSG_COUNT + 1;
+      // items: PRESET_MSG_COUNT presets + "[Compose...]" + "[Reply DM...]"
+      int total_items = PRESET_MSG_COUNT + 2;
       int visible = 3;
       int scroll_top = 0;
       if (_preset_sel >= visible) scroll_top = _preset_sel - visible + 1;
@@ -276,8 +312,10 @@ public:
           } else {
             display.print(preset_messages[i]);
           }
-        } else {
+        } else if (i == PRESET_MSG_COUNT) {
           display.print("[Compose...]");
+        } else {
+          display.print("[Reply DM...]");
         }
       }
     } else if (_page == HomePage::RECENT) {
@@ -466,15 +504,39 @@ public:
     }
     if (c == KEY_NEXT || c == KEY_RIGHT) {
       _page = (_page + 1) % HomePage::Count;
-      if (_page == HomePage::PRESETS) {
+      if (_page == HomePage::MESSAGES) {
+        _task->showAlert("Message history", 800);
+      } else if (_page == HomePage::PRESETS) {
         _task->showAlert("Quick messages", 800);
       } else if (_page == HomePage::RECENT) {
         _task->showAlert("Recent adverts", 800);
       }
       return true;
     }
+    if (_page == HomePage::MESSAGES) {
+      int total = _task->_msg_log_count;
+      if (total > 0) {
+        if (c == KEY_UP) {
+          _msg_sel = (_msg_sel + total - 1) % total;
+          return true;
+        }
+        if (c == KEY_DOWN) {
+          _msg_sel = (_msg_sel + 1) % total;
+          return true;
+        }
+        if (c == KEY_ENTER) {
+          int buf_idx = (_task->_msg_log_next - 1 - _msg_sel + MSG_LOG_SIZE) % MSG_LOG_SIZE;
+          auto& entry = _task->_msg_log[buf_idx];
+          char full[80];
+          snprintf(full, sizeof(full), "%s: %s", entry.origin, entry.text);
+          _task->showAlert(full, 2000);
+          return true;
+        }
+      }
+      return false;
+    }
     if (_page == HomePage::PRESETS) {
-      int total_items = PRESET_MSG_COUNT + 1;
+      int total_items = PRESET_MSG_COUNT + 2;
       if (c == KEY_UP) {
         _preset_sel = (_preset_sel + total_items - 1) % total_items;
         return true;
@@ -484,9 +546,14 @@ public:
         return true;
       }
       if (c == KEY_ENTER) {
-        if (_preset_sel == total_items - 1) {
+        if (_preset_sel == PRESET_MSG_COUNT) {
           // "[Compose...]" selected
           _task->gotoComposeScreen();
+          return true;
+        }
+        if (_preset_sel == PRESET_MSG_COUNT + 1) {
+          // "[Reply DM...]" selected
+          _task->gotoContactSelect();
           return true;
         }
         // Send preset message
@@ -519,6 +586,8 @@ public:
             uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
             bool ok = the_mesh.sendGroupMessage(ts, ch.channel,
                           the_mesh.getNodePrefs()->node_name, text, strlen(text));
+            the_mesh.queueSentChannelMessage(0, ts, text, strlen(text));
+            _task->addToMsgLog("You", text, true);
             _task->notify(UIEventType::ack);
             _task->showAlert(ok ? "Sent!" : "Send failed", 800);
           } else {
@@ -668,6 +737,8 @@ class ComposeScreen : public UIScreen {
   char _compose_buf[MAX_TEXT_LEN];
   uint8_t _compose_len;
   uint8_t _kb_row, _kb_col;
+  bool _dm_mode;
+  ContactInfo _dm_contact;
 
 public:
   ComposeScreen(UITask* task) : _task(task) {
@@ -679,6 +750,12 @@ public:
     _compose_buf[0] = '\0';
     _kb_row = 0;
     _kb_col = 0;
+    _dm_mode = false;
+  }
+
+  void setDMTarget(const ContactInfo& contact) {
+    _dm_mode = true;
+    _dm_contact = contact;
   }
 
   int render(DisplayDriver& display) override {
@@ -686,9 +763,15 @@ public:
     display.setTextSize(1);
     display.setColor(DisplayDriver::GREEN);
     display.setCursor(0, 0);
-    display.print("> ");
+    if (_dm_mode) {
+      char prefix[32];
+      snprintf(prefix, sizeof(prefix), "DM:%s ", _dm_contact.name);
+      display.print(prefix);
+    } else {
+      display.print("> ");
+    }
     // Show last portion of text that fits on screen
-    int max_chars = 19; // approx chars that fit in 128px minus "> " prefix
+    int max_chars = _dm_mode ? 14 : 19;
     if (_compose_len <= max_chars) {
       display.print(_compose_buf);
     } else {
@@ -759,15 +842,28 @@ public:
       if (ch == '\x01') {
         // SND: send the composed message
         if (_compose_len > 0) {
-          ChannelDetails ch_det;
-          if (the_mesh.getChannel(0, ch_det)) {
+          if (_dm_mode) {
             uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
-            bool ok = the_mesh.sendGroupMessage(ts, ch_det.channel,
-                          the_mesh.getNodePrefs()->node_name, _compose_buf, _compose_len);
+            uint32_t expected_ack = 0;
+            uint32_t est_timeout = 0;
+            int result = the_mesh.sendMessage(_dm_contact, ts, 0, _compose_buf, expected_ack, est_timeout);
+            the_mesh.queueSentDirectMessage(_dm_contact, ts, _compose_buf);
+            _task->addToMsgLog("You", _compose_buf, true);
             _task->notify(UIEventType::ack);
-            _task->showAlert(ok ? "Sent!" : "Send failed", 800);
+            _task->showAlert(result > 0 ? "DM Sent!" : "DM failed", 800);
           } else {
-            _task->showAlert("No channel 0", 800);
+            ChannelDetails ch_det;
+            if (the_mesh.getChannel(0, ch_det)) {
+              uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
+              bool ok = the_mesh.sendGroupMessage(ts, ch_det.channel,
+                            the_mesh.getNodePrefs()->node_name, _compose_buf, _compose_len);
+              the_mesh.queueSentChannelMessage(0, ts, _compose_buf, _compose_len);
+              _task->addToMsgLog("You", _compose_buf, true);
+              _task->notify(UIEventType::ack);
+              _task->showAlert(ok ? "Sent!" : "Send failed", 800);
+            } else {
+              _task->showAlert("No channel 0", 800);
+            }
           }
         }
         reset();
@@ -796,12 +892,89 @@ public:
   }
 };
 
-// Keyboard layout: A-Z, 0-9, . ! ? space, SND (\x01)
+class ContactSelectScreen : public UIScreen {
+  UITask* _task;
+  uint8_t _contact_sel;
+  int _num_contacts;
+
+public:
+  ContactSelectScreen(UITask* task) : _task(task), _contact_sel(0), _num_contacts(0) {}
+
+  int render(DisplayDriver& display) override {
+    _num_contacts = the_mesh.getNumContacts();
+
+    display.setTextSize(1);
+    display.setColor(DisplayDriver::YELLOW);
+    char hdr[32];
+    snprintf(hdr, sizeof(hdr), "-- Contacts (%d) --", _num_contacts);
+    display.drawTextCentered(display.width() / 2, 18, hdr);
+
+    if (_num_contacts == 0) {
+      display.setColor(DisplayDriver::LIGHT);
+      display.drawTextCentered(display.width() / 2, 38, "No contacts");
+    } else {
+      if (_contact_sel >= _num_contacts) _contact_sel = 0;
+      int visible = 3;
+      int scroll_top = 0;
+      if (_contact_sel >= visible) scroll_top = _contact_sel - visible + 1;
+      if (scroll_top > _num_contacts - visible) scroll_top = _num_contacts - visible;
+      if (scroll_top < 0) scroll_top = 0;
+
+      int y = 30;
+      ContactInfo ci;
+      for (int i = scroll_top; i < scroll_top + visible && i < _num_contacts; i++, y += 12) {
+        if (i == _contact_sel) {
+          display.setColor(DisplayDriver::YELLOW);
+          display.setCursor(0, y);
+          display.print(">");
+        }
+        display.setColor(i == _contact_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+        display.setCursor(8, y);
+        if (the_mesh.getContactByIdx(i, ci)) {
+          display.print(ci.name);
+        }
+      }
+    }
+    return 5000;
+  }
+
+  bool handleInput(char c) override {
+    if (_num_contacts == 0) {
+      if (c == KEY_CANCEL || c == KEY_ENTER) {
+        _task->gotoHomeScreen();
+        return true;
+      }
+      return false;
+    }
+    if (c == KEY_UP) {
+      _contact_sel = (_contact_sel + _num_contacts - 1) % _num_contacts;
+      return true;
+    }
+    if (c == KEY_DOWN) {
+      _contact_sel = (_contact_sel + 1) % _num_contacts;
+      return true;
+    }
+    if (c == KEY_ENTER) {
+      ContactInfo ci;
+      if (the_mesh.getContactByIdx(_contact_sel, ci)) {
+        _task->startDMCompose(ci);
+      }
+      return true;
+    }
+    if (c == KEY_CANCEL) {
+      _task->gotoHomeScreen();
+      return true;
+    }
+    return false;
+  }
+};
+
+// QWERTY keyboard layout
 const char ComposeScreen::KB_CHARS[KB_ROWS * KB_COLS] = {
-  'A','B','C','D','E','F','G','H','I','J',
-  'K','L','M','N','O','P','Q','R','S','T',
-  'U','V','W','X','Y','Z','0','1','2','3',
-  '4','5','6','7','8','9','.','!',' ','\x01'
+  'Q','W','E','R','T','Y','U','I','O','P',
+  'A','S','D','F','G','H','J','K','L',' ',
+  'Z','X','C','V','B','N','M','.','!','?',
+  '0','1','2','3','4','5','6','7','8','\x01'
 };
 
 void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* node_prefs) {
@@ -850,6 +1023,7 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   home = new HomeScreen(this, &rtc_clock, sensors, node_prefs);
   msg_preview = new MsgPreviewScreen(this, &rtc_clock);
   compose = new ComposeScreen(this);
+  contact_select = new ContactSelectScreen(this);
   setCurrScreen(splash);
 }
 
@@ -898,6 +1072,7 @@ void UITask::msgRead(int msgcount) {
 void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount) {
   _msgcount = msgcount;
 
+  addToMsgLog(from_name, text, false);
   ((MsgPreviewScreen *) msg_preview)->addPreview(path_len, from_name, text);
   setCurrScreen(msg_preview);
 
@@ -941,6 +1116,28 @@ void UITask::setCurrScreen(UIScreen* c) {
 void UITask::gotoComposeScreen() {
   ((ComposeScreen*)compose)->reset();
   setCurrScreen(compose);
+}
+
+void UITask::gotoContactSelect() {
+  setCurrScreen(contact_select);
+}
+
+void UITask::startDMCompose(const ContactInfo& contact) {
+  ((ComposeScreen*)compose)->reset();
+  ((ComposeScreen*)compose)->setDMTarget(contact);
+  setCurrScreen(compose);
+}
+
+void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent) {
+  auto& entry = _msg_log[_msg_log_next];
+  entry.timestamp = the_mesh.getRTCClock()->getCurrentTime();
+  strncpy(entry.origin, origin, sizeof(entry.origin) - 1);
+  entry.origin[sizeof(entry.origin) - 1] = '\0';
+  strncpy(entry.text, text, sizeof(entry.text) - 1);
+  entry.text[sizeof(entry.text) - 1] = '\0';
+  entry.is_sent = is_sent;
+  _msg_log_next = (_msg_log_next + 1) % MSG_LOG_SIZE;
+  if (_msg_log_count < MSG_LOG_SIZE) _msg_log_count++;
 }
 
 /*
