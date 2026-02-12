@@ -791,15 +791,17 @@ public:
 };
 
 class ComposeScreen : public UIScreen {
-  static const uint8_t KB_ROWS = 4;
+  static const uint8_t KB_ROWS = 5;
   static const uint8_t KB_COLS = 10;
   static const char KB_CHARS[KB_ROWS * KB_COLS];
+  // special keys: \x01=SND, \x02=SHIFT, \x03=DEL
 
   UITask* _task;
   char _compose_buf[MAX_TEXT_LEN];
   uint8_t _compose_len;
   uint8_t _kb_row, _kb_col;
   bool _dm_mode;
+  bool _caps;
   ContactInfo _dm_contact;
   int _channel_idx;       // -1 = default (ch 0), >=0 = specific channel
   char _channel_name[32]; // display name for selected channel
@@ -815,6 +817,7 @@ public:
     _kb_row = 0;
     _kb_col = 0;
     _dm_mode = false;
+    _caps = true;  // start uppercase
     _channel_idx = -1;
   }
 
@@ -840,7 +843,11 @@ public:
       display.print(prefix);
     } else if (_channel_idx >= 0) {
       char prefix[32];
-      snprintf(prefix, sizeof(prefix), "#%s ", _channel_name);
+      if (_channel_name[0] == '#') {
+        snprintf(prefix, sizeof(prefix), "%s ", _channel_name);
+      } else {
+        snprintf(prefix, sizeof(prefix), "#%s ", _channel_name);
+      }
       display.print(prefix);
     } else {
       display.print("> ");
@@ -857,10 +864,10 @@ public:
     // Divider
     display.drawRect(0, 12, display.width(), 1);
 
-    // Keyboard grid
+    // Keyboard grid (5 rows x 10 cols)
     int cell_w = display.width() / KB_COLS;  // 12px per cell
     int start_y = 14;
-    int row_h = 12;
+    int row_h = 10;
 
     for (uint8_t r = 0; r < KB_ROWS; r++) {
       for (uint8_t c = 0; c < KB_COLS; c++) {
@@ -879,15 +886,24 @@ public:
 
         char ch = KB_CHARS[idx];
         if (ch == '\x01') {
-          // SND action label
-          display.setCursor(x + 1, y + 2);
+          display.setCursor(x + 1, y + 1);
           display.print("SND");
+        } else if (ch == '\x02') {
+          display.setCursor(x + 1, y + 1);
+          display.print(_caps ? "AA" : "aa");
+        } else if (ch == '\x03') {
+          display.setCursor(x + 1, y + 1);
+          display.print("DEL");
         } else if (ch == ' ') {
-          display.setCursor(x + 2, y + 2);
+          display.setCursor(x + 2, y + 1);
           display.print("_");
         } else {
-          char s[2] = { ch, '\0' };
-          display.setCursor(x + (cell_w - display.getTextWidth(s)) / 2, y + 2);
+          char display_ch = ch;
+          if (ch >= 'A' && ch <= 'Z' && !_caps) {
+            display_ch = ch + 32;  // lowercase
+          }
+          char s[2] = { display_ch, '\0' };
+          display.setCursor(x + (cell_w - display.getTextWidth(s)) / 2, y + 1);
           display.print(s);
         }
       }
@@ -946,9 +962,26 @@ public:
         _task->gotoHomeScreen();
         return true;
       }
-      // Append character
+      if (ch == '\x02') {
+        // SHIFT: toggle caps
+        _caps = !_caps;
+        return true;
+      }
+      if (ch == '\x03') {
+        // DEL: backspace
+        if (_compose_len > 0) {
+          _compose_len--;
+          _compose_buf[_compose_len] = '\0';
+        }
+        return true;
+      }
+      // Append character (apply case for letters)
       if (_compose_len < MAX_TEXT_LEN - 1) {
-        _compose_buf[_compose_len++] = ch;
+        char typed = ch;
+        if (ch >= 'A' && ch <= 'Z' && !_caps) {
+          typed = ch + 32;  // lowercase
+        }
+        _compose_buf[_compose_len++] = typed;
         _compose_buf[_compose_len] = '\0';
       }
       return true;
@@ -1100,9 +1133,13 @@ public:
         display.setCursor(8, y);
         ChannelDetails cd;
         if (the_mesh.getChannel(i, cd)) {
-          char label[36];
-          snprintf(label, sizeof(label), "#%s", cd.name);
-          display.print(label);
+          if (cd.name[0] == '#') {
+            display.print(cd.name);
+          } else {
+            char label[36];
+            snprintf(label, sizeof(label), "#%s", cd.name);
+            display.print(label);
+          }
         }
       }
     }
@@ -1141,11 +1178,13 @@ public:
 };
 
 // QWERTY keyboard layout
+// \x01=SND  \x02=SHIFT  \x03=DEL
 const char ComposeScreen::KB_CHARS[KB_ROWS * KB_COLS] = {
   'Q','W','E','R','T','Y','U','I','O','P',
   'A','S','D','F','G','H','J','K','L',' ',
-  'Z','X','C','V','B','N','M','.','!','?',
-  '0','1','2','3','4','5','6','7','8','\x01'
+  'Z','X','C','V','B','N','M',',','.','-',
+  '0','1','2','3','4','5','6','7','8','9',
+  '\x02','\x03','!','?','@','\'',':',';',' ','\x01'
 };
 
 void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* node_prefs) {
