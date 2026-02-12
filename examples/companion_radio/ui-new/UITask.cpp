@@ -942,48 +942,45 @@ public:
   }
 
   int render(DisplayDriver& display) override {
-    // Text area (top 12 pixels, single line, clipped)
+    // Two-line text area: line 1 = prefix, line 2 = message text
     display.setTextSize(1);
     display.setColor(DisplayDriver::GREEN);
 
-    // Build prefix
+    // Line 1: prefix (DM:name, #channel, or ">")
     char prefix[32];
     if (_dm_mode) {
-      snprintf(prefix, sizeof(prefix), "DM:%s ", _dm_contact.name);
+      snprintf(prefix, sizeof(prefix), "DM:%s", _dm_contact.name);
     } else if (_channel_idx >= 0) {
       if (_channel_name[0] == '#') {
-        snprintf(prefix, sizeof(prefix), "%s ", _channel_name);
+        snprintf(prefix, sizeof(prefix), "%s", _channel_name);
       } else {
-        snprintf(prefix, sizeof(prefix), "#%s ", _channel_name);
+        snprintf(prefix, sizeof(prefix), "#%s", _channel_name);
       }
     } else {
-      strcpy(prefix, "> ");
+      strcpy(prefix, "> broadcast");
     }
+    display.drawTextEllipsized(0, 0, display.width(), prefix);
 
-    // Print prefix, then show tail of compose buffer that fits in remaining width
-    int prefix_w = display.getTextWidth(prefix);
-    display.setCursor(0, 0);
-    display.print(prefix);
-
-    int avail_w = display.width() - prefix_w - display.getTextWidth("_");
-    char tail[MAX_TEXT_LEN + 1];
-    // Find how much of the end of the buffer fits
+    // Line 2: message text with cursor, scrolls to show tail
+    display.setColor(DisplayDriver::YELLOW);
+    int avail_w = display.width() - display.getTextWidth("_");
     int start = 0;
     if (_compose_len > 0) {
       int char_w = display.getTextWidth("A");
       int max_chars = (char_w > 0) ? avail_w / char_w : 19;
       if (_compose_len > max_chars) start = _compose_len - max_chars;
     }
+    char tail[MAX_TEXT_LEN + 2];
     snprintf(tail, sizeof(tail), "%s_", &_compose_buf[start]);
-    display.drawTextEllipsized(prefix_w, 0, display.width() - prefix_w, tail);
+    display.drawTextEllipsized(0, 10, display.width(), tail);
 
     // Divider
-    display.drawRect(0, 12, display.width(), 1);
+    display.drawRect(0, 20, display.width(), 1);
 
-    // Keyboard grid (5 rows x 10 cols)
-    int cell_w = display.width() / KB_COLS;  // 12px per cell
-    int start_y = 14;
-    int row_h = 10;
+    // Keyboard grid (5 rows x 10 cols, compact)
+    int cell_w = display.width() / KB_COLS;
+    int start_y = 22;
+    int row_h = 8;
 
     for (uint8_t r = 0; r < KB_ROWS; r++) {
       for (uint8_t c = 0; c < KB_COLS; c++) {

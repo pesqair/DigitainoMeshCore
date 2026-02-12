@@ -584,9 +584,9 @@ void MyMesh::queueSentDirectMessage(const ContactInfo& recipient, uint32_t times
   } else {
     out_frame[i++] = RESP_CODE_CONTACT_MSG_RECV;
   }
-  memcpy(&out_frame[i], self_id.pub_key, 6);
+  memcpy(&out_frame[i], recipient.id.pub_key, 6);
   i += 6;
-  out_frame[i++] = 0; // path_len=0 means "from self"
+  out_frame[i++] = 0; // path_len=0 flags this as sent-by-self
   out_frame[i++] = TXT_TYPE_PLAIN;
   memcpy(&out_frame[i], &timestamp, 4);
   i += 4;
