@@ -556,6 +556,10 @@ void MyMesh::queueSentChannelMessage(int channel_idx, uint32_t timestamp, const 
   out_frame[i++] = TXT_TYPE_PLAIN;
   memcpy(&out_frame[i], &timestamp, 4);
   i += 4;
+
+  // Match sendGroupMessage format: "sender_name: text"
+  int prefix_len = snprintf((char*)&out_frame[i], MAX_FRAME_SIZE - i, "%s: ", _prefs.node_name);
+  i += prefix_len;
   if (i + text_len > MAX_FRAME_SIZE) {
     text_len = MAX_FRAME_SIZE - i;
   }

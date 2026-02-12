@@ -1,5 +1,6 @@
 #include "UITask.h"
 #include <helpers/TxtDataHelpers.h>
+#include <helpers/AdvertDataHelpers.h>
 #include "../MyMesh.h"
 #include "target.h"
 #ifdef WIFI_SSID
@@ -1004,41 +1005,57 @@ public:
 class ContactSelectScreen : public UIScreen {
   UITask* _task;
   uint8_t _contact_sel;
-  int _num_contacts;
+  int _num_filtered;
   bool _gps_mode;  // true = send GPS DM, false = compose DM
 
+  // Filtered index map: maps display position -> actual contact index
+  // Only includes ADV_TYPE_CHAT contacts (not repeaters, rooms, sensors)
+  #define MAX_FILTERED_CONTACTS 64
+  uint16_t _filtered[MAX_FILTERED_CONTACTS];
+
+  void rebuildFiltered() {
+    _num_filtered = 0;
+    int total = the_mesh.getNumContacts();
+    ContactInfo ci;
+    for (int i = 0; i < total && _num_filtered < MAX_FILTERED_CONTACTS; i++) {
+      if (the_mesh.getContactByIdx(i, ci) && ci.type == ADV_TYPE_CHAT) {
+        _filtered[_num_filtered++] = i;
+      }
+    }
+    if (_contact_sel >= _num_filtered) _contact_sel = 0;
+  }
+
 public:
-  ContactSelectScreen(UITask* task) : _task(task), _contact_sel(0), _num_contacts(0), _gps_mode(false) {}
+  ContactSelectScreen(UITask* task) : _task(task), _contact_sel(0), _num_filtered(0), _gps_mode(false) {}
 
   void setGPSMode(bool gps) { _gps_mode = gps; }
 
   int render(DisplayDriver& display) override {
-    _num_contacts = the_mesh.getNumContacts();
+    rebuildFiltered();
 
     display.setTextSize(1);
     display.setColor(DisplayDriver::YELLOW);
     char hdr[32];
     if (_gps_mode) {
-      snprintf(hdr, sizeof(hdr), "-- GPS DM (%d) --", _num_contacts);
+      snprintf(hdr, sizeof(hdr), "-- GPS DM (%d) --", _num_filtered);
     } else {
-      snprintf(hdr, sizeof(hdr), "-- Contacts (%d) --", _num_contacts);
+      snprintf(hdr, sizeof(hdr), "-- Contacts (%d) --", _num_filtered);
     }
     display.drawTextCentered(display.width() / 2, 18, hdr);
 
-    if (_num_contacts == 0) {
+    if (_num_filtered == 0) {
       display.setColor(DisplayDriver::LIGHT);
       display.drawTextCentered(display.width() / 2, 38, "No contacts");
     } else {
-      if (_contact_sel >= _num_contacts) _contact_sel = 0;
       int visible = 3;
       int scroll_top = 0;
       if (_contact_sel >= visible) scroll_top = _contact_sel - visible + 1;
-      if (scroll_top > _num_contacts - visible) scroll_top = _num_contacts - visible;
+      if (scroll_top > _num_filtered - visible) scroll_top = _num_filtered - visible;
       if (scroll_top < 0) scroll_top = 0;
 
       int y = 30;
       ContactInfo ci;
-      for (int i = scroll_top; i < scroll_top + visible && i < _num_contacts; i++, y += 12) {
+      for (int i = scroll_top; i < scroll_top + visible && i < _num_filtered; i++, y += 12) {
         if (i == _contact_sel) {
           display.setColor(DisplayDriver::YELLOW);
           display.setCursor(0, y);
@@ -1046,7 +1063,7 @@ public:
         }
         display.setColor(i == _contact_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
         display.setCursor(8, y);
-        if (the_mesh.getContactByIdx(i, ci)) {
+        if (the_mesh.getContactByIdx(_filtered[i], ci)) {
           display.print(ci.name);
         }
       }
@@ -1055,7 +1072,7 @@ public:
   }
 
   bool handleInput(char c) override {
-    if (_num_contacts == 0) {
+    if (_num_filtered == 0) {
       if (c == KEY_CANCEL || c == KEY_ENTER) {
         _task->gotoHomeScreen();
         return true;
@@ -1063,16 +1080,16 @@ public:
       return false;
     }
     if (c == KEY_UP) {
-      _contact_sel = (_contact_sel + _num_contacts - 1) % _num_contacts;
+      _contact_sel = (_contact_sel + _num_filtered - 1) % _num_filtered;
       return true;
     }
     if (c == KEY_DOWN) {
-      _contact_sel = (_contact_sel + 1) % _num_contacts;
+      _contact_sel = (_contact_sel + 1) % _num_filtered;
       return true;
     }
     if (c == KEY_ENTER) {
       ContactInfo ci;
-      if (the_mesh.getContactByIdx(_contact_sel, ci)) {
+      if (the_mesh.getContactByIdx(_filtered[_contact_sel], ci)) {
         if (_gps_mode) {
           _task->sendGPSDM(ci);
         } else {
