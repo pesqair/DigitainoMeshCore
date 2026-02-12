@@ -29,6 +29,40 @@
   #define PRESS_LABEL "long press"
 #endif
 
+#ifndef PRESET_MSG_COUNT
+  #define PRESET_MSG_COUNT 8
+#endif
+#ifndef PRESET_MSG_1
+  #define PRESET_MSG_1 "OK"
+#endif
+#ifndef PRESET_MSG_2
+  #define PRESET_MSG_2 "Help!"
+#endif
+#ifndef PRESET_MSG_3
+  #define PRESET_MSG_3 "On my way"
+#endif
+#ifndef PRESET_MSG_4
+  #define PRESET_MSG_4 "At destination"
+#endif
+#ifndef PRESET_MSG_5
+  #define PRESET_MSG_5 "Yes"
+#endif
+#ifndef PRESET_MSG_6
+  #define PRESET_MSG_6 "No"
+#endif
+#ifndef PRESET_MSG_7
+  #define PRESET_MSG_7 "SOS Emergency"
+#endif
+#ifndef PRESET_MSG_8
+  #define PRESET_MSG_8 ""
+#endif
+#define PRESET_GPS_INDEX 7
+
+static const char* preset_messages[PRESET_MSG_COUNT] = {
+  PRESET_MSG_1, PRESET_MSG_2, PRESET_MSG_3, PRESET_MSG_4,
+  PRESET_MSG_5, PRESET_MSG_6, PRESET_MSG_7, PRESET_MSG_8
+};
+
 #include "icons.h"
 
 class SplashScreen : public UIScreen {
@@ -78,6 +112,7 @@ public:
 class HomeScreen : public UIScreen {
   enum HomePage {
     FIRST,
+    PRESETS,
     RECENT,
     RADIO,
     BLUETOOTH,
@@ -97,6 +132,7 @@ class HomeScreen : public UIScreen {
   SensorManager* _sensors;
   NodePrefs* _node_prefs;
   uint8_t _page;
+  uint8_t _preset_sel;
   bool _shutdown_init;
   AdvertPath recent[UI_RECENT_LIST_SIZE];
 
@@ -156,8 +192,8 @@ class HomeScreen : public UIScreen {
 
 public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, SensorManager* sensors, NodePrefs* node_prefs)
-     : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0), 
-       _shutdown_init(false), sensors_lpp(200) {  }
+     : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
+       _preset_sel(0), _shutdown_init(false), sensors_lpp(200) {  }
 
   void poll() override {
     if (_shutdown_init && !_task->isButtonPressed()) {  // must wait for USR button to be released
@@ -211,6 +247,38 @@ public:
         display.setTextSize(2);
         sprintf(tmp, "Pin:%d", the_mesh.getBLEPin());
         display.drawTextCentered(display.width() / 2, 43, tmp);
+      }
+    } else if (_page == HomePage::PRESETS) {
+      display.setColor(DisplayDriver::YELLOW);
+      display.setTextSize(1);
+      display.drawTextCentered(display.width() / 2, 18, "-- Quick Msg --");
+
+      // 9 items: PRESET_MSG_COUNT presets + "[Compose...]"
+      int total_items = PRESET_MSG_COUNT + 1;
+      int visible = 3;
+      int scroll_top = 0;
+      if (_preset_sel >= visible) scroll_top = _preset_sel - visible + 1;
+      if (scroll_top > total_items - visible) scroll_top = total_items - visible;
+      if (scroll_top < 0) scroll_top = 0;
+
+      int y = 30;
+      for (int i = scroll_top; i < scroll_top + visible && i < total_items; i++, y += 12) {
+        if (i == _preset_sel) {
+          display.setColor(DisplayDriver::YELLOW);
+          display.setCursor(0, y);
+          display.print(">");
+        }
+        display.setColor(i == _preset_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+        display.setCursor(8, y);
+        if (i < PRESET_MSG_COUNT) {
+          if (i == PRESET_GPS_INDEX) {
+            display.print("Send Location");
+          } else {
+            display.print(preset_messages[i]);
+          }
+        } else {
+          display.print("[Compose...]");
+        }
       }
     } else if (_page == HomePage::RECENT) {
       the_mesh.getRecentlyHeard(recent, UI_RECENT_LIST_SIZE);
@@ -398,10 +466,67 @@ public:
     }
     if (c == KEY_NEXT || c == KEY_RIGHT) {
       _page = (_page + 1) % HomePage::Count;
-      if (_page == HomePage::RECENT) {
+      if (_page == HomePage::PRESETS) {
+        _task->showAlert("Quick messages", 800);
+      } else if (_page == HomePage::RECENT) {
         _task->showAlert("Recent adverts", 800);
       }
       return true;
+    }
+    if (_page == HomePage::PRESETS) {
+      int total_items = PRESET_MSG_COUNT + 1;
+      if (c == KEY_UP) {
+        _preset_sel = (_preset_sel + total_items - 1) % total_items;
+        return true;
+      }
+      if (c == KEY_DOWN) {
+        _preset_sel = (_preset_sel + 1) % total_items;
+        return true;
+      }
+      if (c == KEY_ENTER) {
+        if (_preset_sel == total_items - 1) {
+          // "[Compose...]" selected
+          _task->gotoComposeScreen();
+          return true;
+        }
+        // Send preset message
+        const char* text = NULL;
+        char gps_text[48];
+#if ENV_INCLUDE_GPS == 1
+        if (_preset_sel == PRESET_GPS_INDEX) {
+          LocationProvider* nmea = sensors.getLocationProvider();
+          if (nmea != NULL && nmea->isValid()) {
+            snprintf(gps_text, sizeof(gps_text), "GPS: %.6f, %.6f",
+                     nmea->getLatitude() / 1000000.0, nmea->getLongitude() / 1000000.0);
+            text = gps_text;
+          } else {
+            _task->showAlert("No GPS fix", 800);
+            return true;
+          }
+        } else {
+          text = preset_messages[_preset_sel];
+        }
+#else
+        if (_preset_sel == PRESET_GPS_INDEX) {
+          _task->showAlert("GPS not enabled", 800);
+          return true;
+        }
+        text = preset_messages[_preset_sel];
+#endif
+        if (text != NULL && text[0] != '\0') {
+          ChannelDetails ch;
+          if (the_mesh.getChannel(0, ch)) {
+            uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
+            bool ok = the_mesh.sendGroupMessage(ts, ch.channel,
+                          the_mesh.getNodePrefs()->node_name, text, strlen(text));
+            _task->notify(UIEventType::ack);
+            _task->showAlert(ok ? "Sent!" : "Send failed", 800);
+          } else {
+            _task->showAlert("No channel 0", 800);
+          }
+        }
+        return true;
+      }
     }
     if (c == KEY_ENTER && _page == HomePage::BLUETOOTH) {
       if (_task->isSerialEnabled()) {  // toggle Bluetooth on/off
@@ -534,6 +659,151 @@ public:
   }
 };
 
+class ComposeScreen : public UIScreen {
+  static const uint8_t KB_ROWS = 4;
+  static const uint8_t KB_COLS = 10;
+  static const char KB_CHARS[KB_ROWS * KB_COLS];
+
+  UITask* _task;
+  char _compose_buf[MAX_TEXT_LEN];
+  uint8_t _compose_len;
+  uint8_t _kb_row, _kb_col;
+
+public:
+  ComposeScreen(UITask* task) : _task(task) {
+    reset();
+  }
+
+  void reset() {
+    _compose_len = 0;
+    _compose_buf[0] = '\0';
+    _kb_row = 0;
+    _kb_col = 0;
+  }
+
+  int render(DisplayDriver& display) override {
+    // Text area (top 12 pixels)
+    display.setTextSize(1);
+    display.setColor(DisplayDriver::GREEN);
+    display.setCursor(0, 0);
+    display.print("> ");
+    // Show last portion of text that fits on screen
+    int max_chars = 19; // approx chars that fit in 128px minus "> " prefix
+    if (_compose_len <= max_chars) {
+      display.print(_compose_buf);
+    } else {
+      display.print(&_compose_buf[_compose_len - max_chars]);
+    }
+    display.print("_");
+
+    // Divider
+    display.drawRect(0, 12, display.width(), 1);
+
+    // Keyboard grid
+    int cell_w = display.width() / KB_COLS;  // 12px per cell
+    int start_y = 14;
+    int row_h = 12;
+
+    for (uint8_t r = 0; r < KB_ROWS; r++) {
+      for (uint8_t c = 0; c < KB_COLS; c++) {
+        int idx = r * KB_COLS + c;
+        int x = c * cell_w;
+        int y = start_y + r * row_h;
+        bool selected = (r == _kb_row && c == _kb_col);
+
+        if (selected) {
+          display.setColor(DisplayDriver::YELLOW);
+          display.fillRect(x, y, cell_w, row_h);
+          display.setColor(DisplayDriver::DARK);
+        } else {
+          display.setColor(DisplayDriver::LIGHT);
+        }
+
+        char ch = KB_CHARS[idx];
+        if (ch == '\x01') {
+          // SND action label
+          display.setCursor(x + 1, y + 2);
+          display.print("SND");
+        } else if (ch == ' ') {
+          display.setCursor(x + 2, y + 2);
+          display.print("_");
+        } else {
+          char s[2] = { ch, '\0' };
+          display.setCursor(x + (cell_w - display.getTextWidth(s)) / 2, y + 2);
+          display.print(s);
+        }
+      }
+    }
+    return 5000;
+  }
+
+  bool handleInput(char c) override {
+    if (c == KEY_UP) {
+      _kb_row = (_kb_row + KB_ROWS - 1) % KB_ROWS;
+      return true;
+    }
+    if (c == KEY_DOWN) {
+      _kb_row = (_kb_row + 1) % KB_ROWS;
+      return true;
+    }
+    if (c == KEY_LEFT) {
+      _kb_col = (_kb_col + KB_COLS - 1) % KB_COLS;
+      return true;
+    }
+    if (c == KEY_RIGHT) {
+      _kb_col = (_kb_col + 1) % KB_COLS;
+      return true;
+    }
+    if (c == KEY_ENTER) {
+      char ch = KB_CHARS[_kb_row * KB_COLS + _kb_col];
+      if (ch == '\x01') {
+        // SND: send the composed message
+        if (_compose_len > 0) {
+          ChannelDetails ch_det;
+          if (the_mesh.getChannel(0, ch_det)) {
+            uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
+            bool ok = the_mesh.sendGroupMessage(ts, ch_det.channel,
+                          the_mesh.getNodePrefs()->node_name, _compose_buf, _compose_len);
+            _task->notify(UIEventType::ack);
+            _task->showAlert(ok ? "Sent!" : "Send failed", 800);
+          } else {
+            _task->showAlert("No channel 0", 800);
+          }
+        }
+        reset();
+        _task->gotoHomeScreen();
+        return true;
+      }
+      // Append character
+      if (_compose_len < MAX_TEXT_LEN - 1) {
+        _compose_buf[_compose_len++] = ch;
+        _compose_buf[_compose_len] = '\0';
+      }
+      return true;
+    }
+    if (c == KEY_CANCEL) {
+      // Backspace, or cancel if empty
+      if (_compose_len > 0) {
+        _compose_len--;
+        _compose_buf[_compose_len] = '\0';
+      } else {
+        reset();
+        _task->gotoHomeScreen();
+      }
+      return true;
+    }
+    return false;
+  }
+};
+
+// Keyboard layout: A-Z, 0-9, . ! ? space, SND (\x01)
+const char ComposeScreen::KB_CHARS[KB_ROWS * KB_COLS] = {
+  'A','B','C','D','E','F','G','H','I','J',
+  'K','L','M','N','O','P','Q','R','S','T',
+  'U','V','W','X','Y','Z','0','1','2','3',
+  '4','5','6','7','8','9','.','!',' ','\x01'
+};
+
 void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* node_prefs) {
   _display = display;
   _sensors = sensors;
@@ -579,6 +849,7 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   splash = new SplashScreen(this);
   home = new HomeScreen(this, &rtc_clock, sensors, node_prefs);
   msg_preview = new MsgPreviewScreen(this, &rtc_clock);
+  compose = new ComposeScreen(this);
   setCurrScreen(splash);
 }
 
@@ -667,6 +938,11 @@ void UITask::setCurrScreen(UIScreen* c) {
   _next_refresh = 100;
 }
 
+void UITask::gotoComposeScreen() {
+  ((ComposeScreen*)compose)->reset();
+  setCurrScreen(compose);
+}
+
 /*
   hardware-agnostic pre-shutdown activity should be done here
 */
@@ -723,8 +999,22 @@ void UITask::loop() {
   } else if (ev == BUTTON_EVENT_LONG_PRESS) {
     c = handleLongPress(KEY_RIGHT);
   }
+  ev = joystick_up.check();
+  if (ev == BUTTON_EVENT_CLICK) {
+    c = checkDisplayOn(KEY_UP);
+  } else if (ev == BUTTON_EVENT_LONG_PRESS) {
+    c = handleLongPress(KEY_UP);
+  }
+  ev = joystick_down.check();
+  if (ev == BUTTON_EVENT_CLICK) {
+    c = checkDisplayOn(KEY_DOWN);
+  } else if (ev == BUTTON_EVENT_LONG_PRESS) {
+    c = handleLongPress(KEY_DOWN);
+  }
   ev = back_btn.check();
-  if (ev == BUTTON_EVENT_TRIPLE_CLICK) {
+  if (ev == BUTTON_EVENT_CLICK) {
+    c = checkDisplayOn(KEY_CANCEL);
+  } else if (ev == BUTTON_EVENT_TRIPLE_CLICK) {
     c = handleTripleClick(KEY_SELECT);
   }
 #elif defined(PIN_USER_BTN)
