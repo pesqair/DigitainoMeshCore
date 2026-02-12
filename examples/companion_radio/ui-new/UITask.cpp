@@ -184,6 +184,8 @@ class HomeScreen : public UIScreen {
   uint8_t _page;
   uint8_t _preset_sel;
   uint8_t _msg_sel;
+  uint8_t _msg_sel_prev;    // to detect selection change and reset scroll
+  int _msg_scroll_px;       // horizontal pixel offset for selected message
   bool _shutdown_init;
   AdvertPath recent[UI_RECENT_LIST_SIZE];
 
@@ -244,7 +246,8 @@ class HomeScreen : public UIScreen {
 public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, SensorManager* sensors, NodePrefs* node_prefs)
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
-       _preset_sel(0), _msg_sel(0), _shutdown_init(false), sensors_lpp(200) {  }
+       _preset_sel(0), _msg_sel(0), _msg_sel_prev(0xFF), _msg_scroll_px(0),
+       _shutdown_init(false), sensors_lpp(200) {  }
 
   void poll() override {
     if (_shutdown_init && !_task->isButtonPressed()) {  // must wait for USR button to be released
@@ -310,6 +313,12 @@ public:
         display.setColor(DisplayDriver::LIGHT);
         display.drawTextCentered(display.width() / 2, 38, "No messages yet");
       } else {
+        // Reset scroll when selection changes
+        if (_msg_sel != _msg_sel_prev) {
+          _msg_scroll_px = 0;
+          _msg_sel_prev = _msg_sel;
+        }
+
         int visible = 3;
         int total = _task->_msg_log_count;
         int scroll_top = 0;
@@ -317,9 +326,9 @@ public:
         if (scroll_top > total - visible) scroll_top = total - visible;
         if (scroll_top < 0) scroll_top = 0;
 
+        int avail_w = display.width() - 8; // pixels available for text after ">" marker
         int y = 30;
         for (int v = scroll_top; v < scroll_top + visible && v < total; v++, y += 12) {
-          // Map display index to circular buffer: newest first
           int buf_idx = (_task->_msg_log_next - 1 - v + MSG_LOG_SIZE) % MSG_LOG_SIZE;
           auto& entry = _task->_msg_log[buf_idx];
           display.setColor(entry.is_sent ? DisplayDriver::YELLOW : DisplayDriver::GREEN);
@@ -327,10 +336,31 @@ public:
             display.setCursor(0, y);
             display.print(">");
           }
-          display.setCursor(8, y);
-          char line[40];
+          char line[80];
           snprintf(line, sizeof(line), "%s: %s", entry.origin, entry.text);
-          display.print(line);
+
+          if (v == _msg_sel) {
+            // Selected item: horizontal scroll if text exceeds width
+            int text_w = display.getTextWidth(line);
+            if (text_w > avail_w) {
+              // Calculate character offset from pixel scroll
+              int char_w = display.getTextWidth("A"); // approx char width
+              int char_off = (char_w > 0) ? _msg_scroll_px / char_w : 0;
+              int line_len = strlen(line);
+              if (char_off >= line_len) {
+                _msg_scroll_px = 0; // wrap around
+                char_off = 0;
+              }
+              display.setCursor(8, y);
+              // Print from offset, clipped by drawTextEllipsized
+              display.drawTextEllipsized(8, y, avail_w, &line[char_off]);
+              _msg_scroll_px += char_w; // advance one character per frame
+            } else {
+              display.drawTextEllipsized(8, y, avail_w, line);
+            }
+          } else {
+            display.drawTextEllipsized(8, y, avail_w, line);
+          }
         }
       }
     } else if (_page == HomePage::PRESETS) {
@@ -546,6 +576,10 @@ public:
         display.drawXbm((display.width() - 32) / 2, 18, power_icon, 32, 32);
         display.drawTextCentered(display.width() / 2, 64 - 11, "hibernate:" PRESS_LABEL);
       }
+    }
+    // Faster refresh when scrolling message text
+    if (_page == HomePage::MESSAGES && _msg_scroll_px > 0) {
+      return 400;
     }
     return 5000;   // next render after 5000 ms
   }
