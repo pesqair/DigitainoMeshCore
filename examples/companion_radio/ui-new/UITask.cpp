@@ -378,38 +378,31 @@ public:
         // Item 0: From
         if (entry.is_sent) {
           snprintf(detail_items[detail_count], sizeof(detail_items[0]), "From: You");
+        } else if (entry.channel_idx >= 0) {
+          // Channel messages: sender is anonymous, show as "someone"
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "From: someone");
         } else {
           snprintf(detail_items[detail_count], sizeof(detail_items[0]), "From: %s", entry.origin);
         }
         detail_count++;
 
-        // Item 1: To
-        if (entry.is_sent) {
-          if (entry.channel_idx >= 0) {
-            ChannelDetails cd;
-            if (the_mesh.getChannel(entry.channel_idx, cd)) {
-              snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: %s%s",
-                       cd.name[0] == '#' ? "" : "#", cd.name);
-            } else {
-              snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: Ch %d", entry.channel_idx);
-            }
-          } else if (entry.contact_name[0] != '\0') {
+        // Item 1: To (channel or DM target)
+        if (entry.channel_idx >= 0) {
+          ChannelDetails cd;
+          if (the_mesh.getChannel(entry.channel_idx, cd)) {
+            snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: %s%s",
+                     cd.name[0] == '#' ? "" : "#", cd.name);
+          } else {
+            snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: Ch %d", entry.channel_idx);
+          }
+        } else if (entry.is_sent) {
+          if (entry.contact_name[0] != '\0') {
             snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: %s", entry.contact_name);
           } else {
             snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: broadcast");
           }
         } else {
-          if (entry.channel_idx >= 0) {
-            ChannelDetails cd;
-            if (the_mesh.getChannel(entry.channel_idx, cd)) {
-              snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: %s%s",
-                       cd.name[0] == '#' ? "" : "#", cd.name);
-            } else {
-              snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: Ch %d", entry.channel_idx);
-            }
-          } else {
-            snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: You");
-          }
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: You");
         }
         detail_count++;
 
