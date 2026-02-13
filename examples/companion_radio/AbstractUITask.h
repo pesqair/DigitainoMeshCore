@@ -46,4 +46,5 @@ public:
   virtual void loop() = 0;
   virtual void matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) { }
   virtual void onPathUpdated(const ContactInfo& contact) { }
+  virtual void onTelemetryResponse(const ContactInfo& contact, float voltage) { }
 };

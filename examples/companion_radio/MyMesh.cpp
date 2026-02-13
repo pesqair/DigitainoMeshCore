@@ -3,6 +3,7 @@
 #include <Arduino.h> // needed for PlatformIO
 #include <Mesh.h>
 #include <SHA256.h>
+#include <helpers/sensors/LPPDataHelpers.h>
 
 #define CMD_APP_START                 1
 #define CMD_SEND_TXT_MSG              2
@@ -419,6 +420,15 @@ int MyMesh::sendPathFind(ContactInfo& contact, uint32_t& est_timeout) {
   return result;
 }
 
+int MyMesh::sendTelemetryReq(const ContactInfo& contact, uint32_t& est_timeout) {
+  uint32_t tag;
+  int result = sendRequest(contact, REQ_TYPE_GET_TELEMETRY_DATA, tag, est_timeout);
+  if (result != MSG_SEND_FAILED) {
+    ui_pending_telemetry = tag;
+  }
+  return result;
+}
+
 void MyMesh::onContactPathUpdated(const ContactInfo &contact) {
   out_frame[0] = PUSH_CODE_PATH_UPDATED;
   memcpy(&out_frame[1], contact.id.pub_key, PUB_KEY_SIZE);
@@ -771,6 +781,32 @@ void MyMesh::onContactResponse(const ContactInfo &contact, const uint8_t *data, 
     memcpy(&out_frame[i], &data[4], len - 4);
     i += (len - 4);
     _serial->writeFrame(out_frame, i);
+  }
+
+  // Check for UI-initiated telemetry response
+  if (_ui && len > 4 && ui_pending_telemetry && tag == ui_pending_telemetry) {
+    ui_pending_telemetry = 0;
+    // Parse LPP telemetry to extract voltage
+    float voltage = 0;
+    LPPReader reader(&data[4], len - 4);
+    uint8_t channel, type;
+    while (reader.readHeader(channel, type)) {
+      if (type == LPP_VOLTAGE) {
+        reader.readVoltage(voltage);
+        break;
+      } else if (type == LPP_TEMPERATURE) {
+        float t; reader.readTemperature(t);
+      } else if (type == LPP_RELATIVE_HUMIDITY) {
+        float h; reader.readRelativeHumidity(h);
+      } else if (type == LPP_BAROMETRIC_PRESSURE) {
+        float p; reader.readPressure(p);
+      } else if (type == LPP_GPS) {
+        float lat, lon, alt; reader.readGPS(lat, lon, alt);
+      } else {
+        break;  // unknown type, stop parsing
+      }
+    }
+    _ui->onTelemetryResponse(contact, voltage);
   }
 }
 

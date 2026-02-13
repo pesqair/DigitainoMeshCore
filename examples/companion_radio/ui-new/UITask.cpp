@@ -217,6 +217,11 @@ class HomeScreen : public UIScreen {
   uint8_t _ct_path_key[PUB_KEY_SIZE];
   bool    _ct_path_found;
   char    _ct_target_name[32];
+  // Telemetry sub-state
+  bool _ct_telem_pending;
+  unsigned long _ct_telem_timeout;
+  bool _ct_telem_done;
+  float _ct_telem_voltage;
 
   void rebuildContactsSorted() {
     _ct_count = 0;
@@ -313,6 +318,7 @@ public:
        _preset_target_choosing(false), _preset_target_sel(0),
        _ct_sel(0), _ct_count(0), _ct_action(false), _ct_action_sel(0), _ct_action_count(0),
        _ct_path_pending(false), _ct_path_found(false),
+       _ct_telem_pending(false), _ct_telem_done(false),
        sensors_lpp(200) {  }
 
   void poll() override {
@@ -764,7 +770,24 @@ public:
       }
     } else if (_page == HomePage::TRACE) {
       display.setTextSize(1);
-      if (_ct_path_pending) {
+      if (_ct_telem_pending || _ct_telem_done) {
+        display.setColor(DisplayDriver::YELLOW);
+        snprintf(tmp, sizeof(tmp), "Telemetry: %s", _ct_target_name);
+        display.drawTextEllipsized(0, 24, display.width(), tmp);
+        if (_ct_telem_done) {
+          display.setColor(DisplayDriver::LIGHT);
+          snprintf(tmp, sizeof(tmp), "Battery: %.2fV", _ct_telem_voltage);
+          display.setCursor(0, 40);
+          display.print(tmp);
+        } else {
+          display.setColor(DisplayDriver::LIGHT);
+          display.drawTextCentered(display.width() / 2, 40, "Waiting...");
+          if (millis() > _ct_telem_timeout) {
+            _ct_telem_pending = false;
+            _task->showAlert("Telem timeout", 1200);
+          }
+        }
+      } else if (_ct_path_pending) {
         // Path discovery in progress
         display.setColor(DisplayDriver::YELLOW);
         snprintf(tmp, sizeof(tmp), "Finding: %s", _ct_target_name);
@@ -816,13 +839,16 @@ public:
           if (ci.type == ADV_TYPE_CHAT) {
             actions[_ct_action_count++] = "Send DM";
             actions[_ct_action_count++] = "Find Path";
+            actions[_ct_action_count++] = "Telemetry";
 #if ENV_INCLUDE_GPS == 1
             actions[_ct_action_count++] = "Send GPS";
 #endif
           } else if (ci.type == ADV_TYPE_REPEATER) {
             actions[_ct_action_count++] = "Find Path";
+            actions[_ct_action_count++] = "Telemetry";
           } else {
             actions[_ct_action_count++] = "Find Path";
+            actions[_ct_action_count++] = "Telemetry";
           }
           if (_ct_action_sel >= _ct_action_count) _ct_action_sel = _ct_action_count - 1;
           int y = 30;
@@ -865,15 +891,21 @@ public:
               display.setColor(v == _ct_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
               char line[48];
               bool is_fav = (ci.flags & 0x01) != 0;
-              const char* type_tag = "";
-              if (ci.type == ADV_TYPE_REPEATER) type_tag = "R";
-              else if (ci.type == ADV_TYPE_ROOM) type_tag = "Rm";
-              else if (ci.type == ADV_TYPE_SENSOR) type_tag = "S";
-              if (type_tag[0]) {
-                snprintf(line, sizeof(line), "%s%s [%s]", is_fav ? "*" : "", ci.name, type_tag);
+              char suffix[12] = "";
+              if (ci.type == ADV_TYPE_REPEATER) {
+                if (ci.out_path_len > 0) snprintf(suffix, sizeof(suffix), "R:%d", ci.out_path_len);
+                else if (ci.out_path_len == 0) strcpy(suffix, "R:D");
+                else strcpy(suffix, "R:?");
+              } else if (ci.type == ADV_TYPE_ROOM) {
+                strcpy(suffix, "Rm");
+              } else if (ci.type == ADV_TYPE_SENSOR) {
+                strcpy(suffix, "S");
               } else {
-                snprintf(line, sizeof(line), "%s%s", is_fav ? "*" : "", ci.name);
+                if (ci.out_path_len > 0) snprintf(suffix, sizeof(suffix), "%d", ci.out_path_len);
+                else if (ci.out_path_len == 0) strcpy(suffix, "D");
+                else strcpy(suffix, "?");
               }
+              snprintf(line, sizeof(line), "%s%s [%s]", is_fav ? "*" : "", ci.name, suffix);
               display.drawTextEllipsized(8, y, display.width() - 8, line);
             }
           }
@@ -1208,6 +1240,14 @@ public:
       return true;
     }
     if (_page == HomePage::TRACE) {
+      if (_ct_telem_pending || _ct_telem_done) {
+        if (c == KEY_CANCEL || c == KEY_ENTER) {
+          _ct_telem_pending = false;
+          _ct_telem_done = false;
+          return true;
+        }
+        return true;
+      }
       if (_ct_path_pending) {
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_path_pending = false;
@@ -1239,13 +1279,16 @@ public:
             if (ci.type == ADV_TYPE_CHAT) {
               actions[act_count++] = "Send DM";
               actions[act_count++] = "Find Path";
+              actions[act_count++] = "Telemetry";
 #if ENV_INCLUDE_GPS == 1
               actions[act_count++] = "Send GPS";
 #endif
             } else if (ci.type == ADV_TYPE_REPEATER) {
               actions[act_count++] = "Find Path";
+              actions[act_count++] = "Telemetry";
             } else {
               actions[act_count++] = "Find Path";
+              actions[act_count++] = "Telemetry";
             }
             const char* chosen = actions[_ct_action_sel];
             if (strcmp(chosen, "Send DM") == 0) {
@@ -1262,6 +1305,19 @@ public:
                 strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
                 _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
                 memcpy(_ct_path_key, ci.id.pub_key, PUB_KEY_SIZE);
+              } else {
+                _task->showAlert("Send failed", 800);
+              }
+            } else if (strcmp(chosen, "Telemetry") == 0) {
+              uint32_t est_timeout;
+              int result = the_mesh.sendTelemetryReq(ci, est_timeout);
+              if (result != MSG_SEND_FAILED) {
+                _ct_action = false;
+                _ct_telem_pending = true;
+                _ct_telem_done = false;
+                _ct_telem_timeout = millis() + est_timeout + 2000;
+                strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
+                _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
               } else {
                 _task->showAlert("Send failed", 800);
               }
@@ -2364,6 +2420,15 @@ void UITask::onPathUpdated(const ContactInfo& contact) {
   if (!hs->_ct_path_pending) return;
   if (memcmp(contact.id.pub_key, hs->_ct_path_key, PUB_KEY_SIZE) != 0) return;
   hs->_ct_path_found = true;
+}
+
+void UITask::onTelemetryResponse(const ContactInfo& contact, float voltage) {
+  if (!home) return;
+  HomeScreen* hs = (HomeScreen*)home;
+  if (!hs->_ct_telem_pending) return;
+  hs->_ct_telem_voltage = voltage;
+  hs->_ct_telem_done = true;
+  hs->_ct_telem_pending = false;
 }
 
 /*
