@@ -1,4 +1,5 @@
 #include "UITask.h"
+#include <math.h>
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/AdvertDataHelpers.h>
 #include "../MyMesh.h"
@@ -192,6 +193,11 @@ class HomeScreen : public UIScreen {
   uint8_t _msg_detail_scroll; // scroll offset within detail items
   bool _shutdown_init;
   bool _show_voltage;
+  bool _show_speed;
+  float _speed_mph;
+  long _prev_lat;       // microdegrees
+  long _prev_lon;       // microdegrees
+  unsigned long _prev_speed_time;
   AdvertPath recent[UI_RECENT_LIST_SIZE];
 
 
@@ -265,7 +271,8 @@ public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, SensorManager* sensors, NodePrefs* node_prefs)
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
        _preset_sel(0), _msg_sel(0), _msg_sel_prev(0xFF), _msg_scroll_px(0),
-       _msg_detail(false), _msg_detail_scroll(0), _shutdown_init(false), _show_voltage(false),
+       _msg_detail(false), _msg_detail_scroll(0), _shutdown_init(false), _show_voltage(false), _show_speed(false),
+       _speed_mph(0), _prev_lat(0), _prev_lon(0), _prev_speed_time(0),
        _preset_target_choosing(false), _preset_target_sel(0), sensors_lpp(200) {  }
 
   void poll() override {
@@ -286,6 +293,48 @@ public:
 
     // battery voltage
     renderBatteryIndicator(display, _task->getBattMilliVolts());
+
+#if ENV_INCLUDE_GPS == 1
+    // speed display (between name and battery)
+    if (_show_speed) {
+      LocationProvider* nmea = sensors.getLocationProvider();
+      if (nmea != NULL && nmea->isValid()) {
+        long lat = nmea->getLatitude();
+        long lon = nmea->getLongitude();
+        unsigned long now = millis();
+        if (_prev_speed_time > 0 && now - _prev_speed_time >= 2000) {
+          // Haversine-lite: approximate distance using equirectangular projection
+          double dlat = (lat - _prev_lat) / 1000000.0 * 0.0174533; // to radians
+          double dlon = (lon - _prev_lon) / 1000000.0 * 0.0174533;
+          double avgLat = ((lat + _prev_lat) / 2.0) / 1000000.0 * 0.0174533;
+          double dx = dlon * cos(avgLat);
+          double dist_km = sqrt(dlat * dlat + dx * dx) * 6371.0;
+          double elapsed_hrs = (now - _prev_speed_time) / 3600000.0;
+          _speed_mph = (float)(dist_km / elapsed_hrs * 0.621371);
+          _prev_lat = lat;
+          _prev_lon = lon;
+          _prev_speed_time = now;
+        } else if (_prev_speed_time == 0) {
+          _prev_lat = lat;
+          _prev_lon = lon;
+          _prev_speed_time = now;
+        }
+      }
+      char spd[10];
+      snprintf(spd, sizeof(spd), "%.0fmph", _speed_mph);
+      display.setColor(DisplayDriver::GREEN);
+      display.setTextSize(1);
+      // Position centered between name and battery
+      int nameEnd = (int)strlen(filtered_name) * 6 + 2;
+      int battStart = _show_voltage
+        ? display.width() - 5 * 6 - 2   // voltage text width
+        : display.width() - 24 - 5;      // battery icon
+      int spdX = nameEnd + (battStart - nameEnd - (int)strlen(spd) * 6) / 2;
+      if (spdX < nameEnd) spdX = nameEnd;
+      display.setCursor(spdX, 1);
+      display.print(spd);
+    }
+#endif
 
     // curr page indicator
     int y = 14;
@@ -980,6 +1029,13 @@ public:
 #if ENV_INCLUDE_GPS == 1
     if (c == KEY_ENTER && _page == HomePage::GPS) {
       _task->toggleGPS();
+      return true;
+    }
+    if (c == KEY_UP && _page == HomePage::GPS) {
+      _show_speed = !_show_speed;
+      if (!_show_speed) _speed_mph = 0;
+      _prev_speed_time = 0; // reset so it picks up fresh position
+      _task->showAlert(_show_speed ? "Speed: ON" : "Speed: OFF", 800);
       return true;
     }
 #endif
