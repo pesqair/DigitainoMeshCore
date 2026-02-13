@@ -404,12 +404,21 @@ int MyMesh::getRecentlyHeard(AdvertPath dest[], int max_num) {
   return max_num;
 }
 
+int MyMesh::sendPathFind(const ContactInfo& contact, uint32_t& est_timeout) {
+  uint32_t tag;
+  return sendRequest(contact, REQ_TYPE_GET_STATUS, tag, est_timeout);
+}
+
 void MyMesh::onContactPathUpdated(const ContactInfo &contact) {
   out_frame[0] = PUSH_CODE_PATH_UPDATED;
   memcpy(&out_frame[1], contact.id.pub_key, PUB_KEY_SIZE);
   _serial->writeFrame(out_frame, 1 + PUB_KEY_SIZE); // NOTE: app may not be connected
 
   dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+
+  if (_ui) {
+    _ui->onPathUpdated(contact);
+  }
 }
 
 ContactInfo*  MyMesh::processAck(const uint8_t *data) {
@@ -856,6 +865,7 @@ void MyMesh::onTraceRecv(mesh::Packet *packet, uint32_t tag, uint32_t auth_code,
   } else {
     MESH_DEBUG_PRINTLN("onTraceRecv(), data received while app offline");
   }
+
 }
 
 uint32_t MyMesh::calcFloodTimeoutMillisFor(uint32_t pkt_airtime_millis) const {

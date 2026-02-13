@@ -160,11 +160,13 @@ public:
 };
 
 class HomeScreen : public UIScreen {
+  friend class UITask;
   enum HomePage {
     FIRST,
     MESSAGES,
     PRESETS,
     RECENT,
+    TRACE,
     RADIO,
     BLUETOOTH,
     ADVERT,
@@ -202,6 +204,13 @@ class HomeScreen : public UIScreen {
   bool _nav_screen_lock;
   AdvertPath recent[UI_RECENT_LIST_SIZE];
 
+  // Path finder page state
+  uint8_t _path_sel;
+  bool _path_pending;
+  unsigned long _path_timeout;
+  char    _path_target_name[32];
+  uint8_t _path_target_key[PUB_KEY_SIZE];  // pub key of contact being searched
+  bool    _path_found;       // set when path discovered during pending
 
   void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts) {
     if (_show_voltage) {
@@ -275,7 +284,9 @@ public:
        _preset_sel(0), _msg_sel(0), _msg_sel_prev(0xFF), _msg_scroll_px(0),
        _msg_detail(false), _msg_detail_scroll(0), _shutdown_init(false), _show_voltage(false), _show_speed(false),
        _show_snr(false), _max_speed(0), _odometer(0), _odo_last(0), _nav_screen_lock(false),
-       _preset_target_choosing(false), _preset_target_sel(0), sensors_lpp(200) {  }
+       _preset_target_choosing(false), _preset_target_sel(0),
+       _path_sel(0), _path_pending(false), _path_found(false),
+       sensors_lpp(200) {  }
 
   void poll() override {
     if (_shutdown_init && !_task->isButtonPressed()) {  // must wait for USR button to be released
@@ -724,6 +735,79 @@ public:
         display.setCursor(display.width() - timestamp_width - 1, y);
         display.print(tmp);
       }
+    } else if (_page == HomePage::TRACE) {
+      display.setTextSize(1);
+      int num_contacts = the_mesh.getNumContacts();
+      if (_path_pending) {
+        // Pending mode - searching for path
+        display.setColor(DisplayDriver::YELLOW);
+        snprintf(tmp, sizeof(tmp), "Finding: %s", _path_target_name);
+        display.drawTextEllipsized(0, 24, display.width(), tmp);
+        display.setColor(DisplayDriver::LIGHT);
+        if (_path_found) {
+          ContactInfo ci;
+          bool found = false;
+          for (int i = 0; i < num_contacts; i++) {
+            if (the_mesh.getContactByIdx(i, ci) && memcmp(ci.id.pub_key, _path_target_key, PUB_KEY_SIZE) == 0) {
+              found = true;
+              break;
+            }
+          }
+          if (found) {
+            snprintf(tmp, sizeof(tmp), "Path found! %d hops", ci.out_path_len);
+          } else {
+            snprintf(tmp, sizeof(tmp), "Path found!");
+          }
+          display.setColor(DisplayDriver::YELLOW);
+          display.drawTextCentered(display.width() / 2, 40, tmp);
+        } else {
+          display.drawTextCentered(display.width() / 2, 40, "Searching...");
+        }
+        // Timeout check
+        if (!_path_found && millis() > _path_timeout) {
+          _path_pending = false;
+          _task->showAlert("No path found", 1200);
+        }
+      } else {
+        // List mode - show all contacts
+        display.setColor(DisplayDriver::YELLOW);
+        snprintf(tmp, sizeof(tmp), "-- Find Path (%d) --", num_contacts);
+        display.drawTextCentered(display.width() / 2, 18, tmp);
+
+        if (num_contacts == 0) {
+          display.setColor(DisplayDriver::LIGHT);
+          display.drawTextCentered(display.width() / 2, 38, "No contacts");
+        } else {
+          if (_path_sel >= num_contacts) _path_sel = num_contacts - 1;
+          int visible = 3;
+          int scroll_top = 0;
+          if (_path_sel >= visible) scroll_top = _path_sel - visible + 1;
+          if (scroll_top > num_contacts - visible) scroll_top = num_contacts - visible;
+          if (scroll_top < 0) scroll_top = 0;
+
+          int y = 30;
+          for (int v = scroll_top; v < scroll_top + visible && v < num_contacts; v++, y += 12) {
+            ContactInfo ci;
+            if (the_mesh.getContactByIdx(v, ci)) {
+              if (v == _path_sel) {
+                display.setColor(DisplayDriver::YELLOW);
+                display.setCursor(0, y);
+                display.print(">");
+              }
+              display.setColor(v == _path_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+              char line[48];
+              if (ci.out_path_len > 0) {
+                snprintf(line, sizeof(line), "%s [%d]", ci.name, ci.out_path_len);
+              } else if (ci.out_path_len == 0) {
+                snprintf(line, sizeof(line), "%s [D]", ci.name);
+              } else {
+                snprintf(line, sizeof(line), "%s [?]", ci.name);
+              }
+              display.drawTextEllipsized(8, y, display.width() - 8, line);
+            }
+          }
+        }
+      }
     } else if (_page == HomePage::RADIO) {
       display.setColor(DisplayDriver::YELLOW);
       display.setTextSize(1);
@@ -1047,8 +1131,51 @@ public:
         _task->showAlert("Quick messages", 800);
       } else if (_page == HomePage::RECENT) {
         _task->showAlert("Recent adverts", 800);
+      } else if (_page == HomePage::TRACE) {
+        _task->showAlert("Find path", 800);
       }
       return true;
+    }
+    if (_page == HomePage::TRACE) {
+      if (_path_pending) {
+        if (c == KEY_CANCEL || c == KEY_ENTER) {
+          _path_pending = false;
+          _path_found = false;
+          return true;
+        }
+        return true;
+      }
+      // List mode
+      int num_contacts = the_mesh.getNumContacts();
+      if (num_contacts > 0) {
+        if (c == KEY_UP) {
+          if (_path_sel > 0) _path_sel--;
+          return true;
+        }
+        if (c == KEY_DOWN) {
+          if (_path_sel < num_contacts - 1) _path_sel++;
+          return true;
+        }
+        if (c == KEY_ENTER) {
+          ContactInfo ci;
+          if (the_mesh.getContactByIdx(_path_sel, ci)) {
+            uint32_t est_timeout;
+            int result = the_mesh.sendPathFind(ci, est_timeout);
+            if (result != MSG_SEND_FAILED) {
+              _path_pending = true;
+              _path_found = false;
+              _path_timeout = millis() + est_timeout + 2000;
+              strncpy(_path_target_name, ci.name, sizeof(_path_target_name));
+              _path_target_name[sizeof(_path_target_name) - 1] = '\0';
+              memcpy(_path_target_key, ci.id.pub_key, PUB_KEY_SIZE);
+            } else {
+              _task->showAlert("Send failed", 800);
+            }
+          }
+          return true;
+        }
+      }
+      return false;
     }
     if (_page == HomePage::MESSAGES) {
       int total = _task->_msg_log_count;
@@ -2112,6 +2239,14 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
       break;
     }
   }
+}
+
+void UITask::onPathUpdated(const ContactInfo& contact) {
+  if (!home) return;  // not yet initialized
+  HomeScreen* hs = (HomeScreen*)home;
+  if (!hs->_path_pending) return;
+  if (memcmp(contact.id.pub_key, hs->_path_target_key, PUB_KEY_SIZE) != 0) return;
+  hs->_path_found = true;
 }
 
 /*
