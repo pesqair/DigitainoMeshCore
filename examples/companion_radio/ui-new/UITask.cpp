@@ -183,15 +183,32 @@ class HomeScreen : public UIScreen {
   NodePrefs* _node_prefs;
   uint8_t _page;
   uint8_t _preset_sel;
+  bool _preset_target_choosing; // true = showing Channel/DM sub-menu
+  uint8_t _preset_target_sel;   // 0=Channel, 1=DM
   uint8_t _msg_sel;
   uint8_t _msg_sel_prev;    // to detect selection change and reset scroll
   int _msg_scroll_px;       // horizontal pixel offset for selected message
   bool _msg_detail;         // true = showing message detail/reply view
+  uint8_t _msg_detail_scroll; // scroll offset within detail items
   bool _shutdown_init;
+  bool _show_voltage;
   AdvertPath recent[UI_RECENT_LIST_SIZE];
 
 
   void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts) {
+    if (_show_voltage) {
+      // Show voltage as text in the top-right area
+      char vbuf[8];
+      float volts = (float)batteryMilliVolts / 1000.0f;
+      snprintf(vbuf, sizeof(vbuf), "%.2fV", volts);
+      display.setColor(DisplayDriver::GREEN);
+      display.setTextSize(1);
+      int textX = display.width() - (int)strlen(vbuf) * 6 - 2;
+      display.setCursor(textX, 1);
+      display.print(vbuf);
+      return;
+    }
+
     // Convert millivolts to percentage
     const int minMilliVolts = 3000; // Minimum voltage (e.g., 3.0V)
     const int maxMilliVolts = 4200; // Maximum voltage (e.g., 4.2V)
@@ -248,7 +265,8 @@ public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, SensorManager* sensors, NodePrefs* node_prefs)
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
        _preset_sel(0), _msg_sel(0), _msg_sel_prev(0xFF), _msg_scroll_px(0),
-       _msg_detail(false), _shutdown_init(false), sensors_lpp(200) {  }
+       _msg_detail(false), _msg_detail_scroll(0), _shutdown_init(false), _show_voltage(false),
+       _preset_target_choosing(false), _preset_target_sel(0), sensors_lpp(200) {  }
 
   void poll() override {
     if (_shutdown_init && !_task->isButtonPressed()) {  // must wait for USR button to be released
@@ -286,11 +304,53 @@ public:
       sprintf(tmp, "MSG: %d", _task->getMsgCount());
       display.drawTextCentered(display.width() / 2, 20, tmp);
 
+      // Show date/time from RTC
+      {
+        uint32_t now = _rtc->getCurrentTime();
+        if (now > 1577836800) { // after 2020-01-01
+          // Basic epoch math for DD-MMM HH:MM (no time.h dependency)
+          uint32_t t = now;
+          int secs = t % 60; (void)secs;
+          t /= 60;
+          int mins = t % 60;
+          t /= 60;
+          int hours = t % 24;
+          t /= 24;
+          // days since epoch (1970-01-01), compute year/month/day
+          int days = (int)t;
+          int year = 1970;
+          while (true) {
+            int ydays = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ? 366 : 365;
+            if (days < ydays) break;
+            days -= ydays;
+            year++;
+          }
+          static const int mdays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+          static const char* mnames[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+          bool leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+          int month = 0;
+          for (month = 0; month < 12; month++) {
+            int md = mdays[month] + ((month == 1 && leap) ? 1 : 0);
+            if (days < md) break;
+            days -= md;
+          }
+          int day = days + 1;
+          snprintf(tmp, sizeof(tmp), "%02d-%s %02d:%02d", day, mnames[month], hours, mins);
+          display.setTextSize(1);
+          display.setColor(DisplayDriver::LIGHT);
+          display.drawTextCentered(display.width() / 2, 36, tmp);
+        } else {
+          display.setTextSize(1);
+          display.setColor(DisplayDriver::LIGHT);
+          display.drawTextCentered(display.width() / 2, 36, "No time set");
+        }
+      }
+
       #ifdef WIFI_SSID
         IPAddress ip = WiFi.localIP();
         snprintf(tmp, sizeof(tmp), "IP: %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
         display.setTextSize(1);
-        display.drawTextCentered(display.width() / 2, 54, tmp); 
+        display.drawTextCentered(display.width() / 2, 54, tmp);
       #endif
       if (_task->hasConnection()) {
         display.setColor(DisplayDriver::GREEN);
@@ -307,50 +367,112 @@ public:
       display.setTextSize(1);
 
       if (_msg_detail && _task->_msg_log_count > 0) {
-        // Detail view for selected message
+        // Scrollable detail view for selected message
         int buf_idx = (_task->_msg_log_next - 1 - _msg_sel + MSG_LOG_SIZE) % MSG_LOG_SIZE;
         auto& entry = _task->_msg_log[buf_idx];
 
+        // Build detail items: From, To, Hops, Path, Reply hint
+        char detail_items[5][48];
+        uint8_t detail_count = 0;
+
+        // Item 0: From
+        if (entry.is_sent) {
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "From: You");
+        } else {
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "From: %s", entry.origin);
+        }
+        detail_count++;
+
+        // Item 1: To
+        if (entry.is_sent) {
+          if (entry.channel_idx >= 0) {
+            ChannelDetails cd;
+            if (the_mesh.getChannel(entry.channel_idx, cd)) {
+              snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: %s%s",
+                       cd.name[0] == '#' ? "" : "#", cd.name);
+            } else {
+              snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: Ch %d", entry.channel_idx);
+            }
+          } else if (entry.contact_name[0] != '\0') {
+            snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: %s", entry.contact_name);
+          } else {
+            snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: broadcast");
+          }
+        } else {
+          if (entry.channel_idx >= 0) {
+            ChannelDetails cd;
+            if (the_mesh.getChannel(entry.channel_idx, cd)) {
+              snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: %s%s",
+                       cd.name[0] == '#' ? "" : "#", cd.name);
+            } else {
+              snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: Ch %d", entry.channel_idx);
+            }
+          } else {
+            snprintf(detail_items[detail_count], sizeof(detail_items[0]), "To: You");
+          }
+        }
+        detail_count++;
+
+        // Item 2: Hops
+        if (entry.is_sent) {
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Hops: local");
+        } else if (entry.path_len == 0xFF) {
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Hops: DM (direct)");
+        } else if (entry.path_len == 0) {
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Hops: 0 (direct)");
+        } else {
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Hops: %d", entry.path_len);
+        }
+        detail_count++;
+
+        // Item 3: Path (only if there are repeater hops)
+        if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF) {
+          char* p = detail_items[detail_count];
+          int pos = snprintf(p, 6, "Path:");
+          for (int i = 0; i < entry.path_len && pos < 46; i++) {
+            if (i > 0) {
+              pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, ">");
+            }
+            pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, "%02X", entry.path[i]);
+          }
+          detail_count++;
+        }
+
+        // Item 4: Reply hint
+        if (entry.channel_idx >= 0) {
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Enter=Reply Ch");
+        } else if (entry.contact_name[0] != '\0' && !entry.is_sent) {
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Enter=Reply DM");
+        } else {
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Cancel=Back");
+        }
+        detail_count++;
+
+        // Clamp scroll
+        if (_msg_detail_scroll > detail_count - 1) _msg_detail_scroll = detail_count - 1;
+
+        // Header
         display.setColor(DisplayDriver::YELLOW);
         display.drawTextCentered(display.width() / 2, 18, "-- Msg Detail --");
 
-        // From / origin
-        display.setColor(entry.is_sent ? DisplayDriver::YELLOW : DisplayDriver::GREEN);
-        char info[48];
-        if (entry.is_sent) {
-          snprintf(info, sizeof(info), "From: You");
-        } else {
-          snprintf(info, sizeof(info), "From: %s", entry.origin);
-        }
-        display.drawTextEllipsized(0, 30, display.width(), info);
-
-        // Hops info
-        display.setColor(DisplayDriver::LIGHT);
-        if (entry.is_sent) {
-          snprintf(info, sizeof(info), "Hops: local");
-        } else if (entry.path_len == 0xFF) {
-          snprintf(info, sizeof(info), "Hops: DM (direct)");
-        } else if (entry.path_len == 0) {
-          snprintf(info, sizeof(info), "Hops: 0 (direct)");
-        } else {
-          snprintf(info, sizeof(info), "Hops: %d", entry.path_len);
-        }
-        display.setCursor(0, 42);
-        display.print(info);
-
-        // Reply hint
-        display.setColor(DisplayDriver::GREEN);
-        if (entry.channel_idx >= 0) {
-          display.drawTextCentered(display.width() / 2, 54, "Enter=Reply Ch");
-        } else if (entry.contact_name[0] != '\0' && !entry.is_sent) {
-          display.drawTextCentered(display.width() / 2, 54, "Enter=Reply DM");
-        } else {
-          display.drawTextCentered(display.width() / 2, 54, "Cancel=Back");
+        // Render 3 visible items from scroll offset
+        int visible = 3;
+        int y = 30;
+        for (int i = _msg_detail_scroll; i < _msg_detail_scroll + visible && i < detail_count; i++, y += 12) {
+          // Color: first item (From) uses sent/recv color, last item (reply) green, rest light
+          if (i == 0) {
+            display.setColor(entry.is_sent ? DisplayDriver::YELLOW : DisplayDriver::GREEN);
+          } else if (i == detail_count - 1) {
+            display.setColor(DisplayDriver::GREEN);
+          } else {
+            display.setColor(DisplayDriver::LIGHT);
+          }
+          display.drawTextEllipsized(0, y, display.width(), detail_items[i]);
         }
       } else {
         display.setColor(DisplayDriver::YELLOW);
         char hdr[32];
-        snprintf(hdr, sizeof(hdr), "-- Messages (%d) --", _task->_msg_log_count);
+        snprintf(hdr, sizeof(hdr), "-- Messages (%d/%d) --", _msg_sel + 1, _task->_msg_log_count);
         display.drawTextCentered(display.width() / 2, 18, hdr);
 
         if (_task->_msg_log_count == 0) {
@@ -409,39 +531,58 @@ public:
     } else if (_page == HomePage::PRESETS) {
       display.setColor(DisplayDriver::YELLOW);
       display.setTextSize(1);
-      display.drawTextCentered(display.width() / 2, 18, "-- Quick Msg --");
 
-      // items: presets + [Compose] + [Reply DM] + [Send GPS DM] + [Channel Msg]
-      int total_items = PRESET_MSG_COUNT + 4;
-      int visible = 3;
-      int scroll_top = 0;
-      if (_preset_sel >= visible) scroll_top = _preset_sel - visible + 1;
-      if (scroll_top > total_items - visible) scroll_top = total_items - visible;
-      if (scroll_top < 0) scroll_top = 0;
+      if (_preset_target_choosing) {
+        // Sub-menu: choose Channel or DM target
+        display.drawTextCentered(display.width() / 2, 18, "-- Send To --");
 
-      int y = 30;
-      for (int i = scroll_top; i < scroll_top + visible && i < total_items; i++, y += 12) {
-        if (i == _preset_sel) {
-          display.setColor(DisplayDriver::YELLOW);
-          display.setCursor(0, y);
-          display.print(">");
-        }
-        display.setColor(i == _preset_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
-        display.setCursor(8, y);
-        if (i < PRESET_MSG_COUNT) {
-          if (i == PRESET_GPS_INDEX) {
-            display.print("Send Location");
-          } else {
-            display.print(preset_messages[i]);
+        int y = 34;
+        const char* opts[2] = { "[Channel...]", "[DM...]" };
+        for (int i = 0; i < 2; i++, y += 14) {
+          if (i == _preset_target_sel) {
+            display.setColor(DisplayDriver::YELLOW);
+            display.setCursor(0, y);
+            display.print(">");
           }
-        } else if (i == PRESET_MSG_COUNT) {
-          display.print("[Compose...]");
-        } else if (i == PRESET_MSG_COUNT + 1) {
-          display.print("[Reply DM...]");
-        } else if (i == PRESET_MSG_COUNT + 2) {
-          display.print("[Send GPS DM...]");
-        } else {
-          display.print("[Channel Msg...]");
+          display.setColor(i == _preset_target_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+          display.setCursor(8, y);
+          display.print(opts[i]);
+        }
+      } else {
+        display.drawTextCentered(display.width() / 2, 18, "-- Quick Msg --");
+
+        // items: presets + [Compose] + [Reply DM] + [Send GPS DM] + [Channel Msg]
+        int total_items = PRESET_MSG_COUNT + 4;
+        int visible = 3;
+        int scroll_top = 0;
+        if (_preset_sel >= visible) scroll_top = _preset_sel - visible + 1;
+        if (scroll_top > total_items - visible) scroll_top = total_items - visible;
+        if (scroll_top < 0) scroll_top = 0;
+
+        int y = 30;
+        for (int i = scroll_top; i < scroll_top + visible && i < total_items; i++, y += 12) {
+          if (i == _preset_sel) {
+            display.setColor(DisplayDriver::YELLOW);
+            display.setCursor(0, y);
+            display.print(">");
+          }
+          display.setColor(i == _preset_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+          display.setCursor(8, y);
+          if (i < PRESET_MSG_COUNT) {
+            if (i == PRESET_GPS_INDEX) {
+              display.print("Send Location");
+            } else {
+              display.print(preset_messages[i]);
+            }
+          } else if (i == PRESET_MSG_COUNT) {
+            display.print("[Compose...]");
+          } else if (i == PRESET_MSG_COUNT + 1) {
+            display.print("[Reply DM...]");
+          } else if (i == PRESET_MSG_COUNT + 2) {
+            display.print("[Send GPS DM...]");
+          } else {
+            display.print("[Channel Msg...]");
+          }
         }
       }
     } else if (_page == HomePage::RECENT) {
@@ -649,6 +790,15 @@ public:
         // In detail view
         if (c == KEY_CANCEL || c == KEY_LEFT) {
           _msg_detail = false;
+          _msg_detail_scroll = 0;
+          return true;
+        }
+        if (c == KEY_UP) {
+          if (_msg_detail_scroll > 0) _msg_detail_scroll--;
+          return true;
+        }
+        if (c == KEY_DOWN) {
+          _msg_detail_scroll++;  // clamped during render
           return true;
         }
         if (c == KEY_ENTER && total > 0) {
@@ -682,21 +832,45 @@ public:
       }
       if (total > 0) {
         if (c == KEY_UP) {
-          _msg_sel = (_msg_sel + total - 1) % total;
+          if (_msg_sel > 0) _msg_sel--;
           return true;
         }
         if (c == KEY_DOWN) {
-          _msg_sel = (_msg_sel + 1) % total;
+          if (_msg_sel < total - 1) _msg_sel++;
           return true;
         }
         if (c == KEY_ENTER) {
           _msg_detail = true;
+          _msg_detail_scroll = 0;
           return true;
         }
       }
       return false;
     }
     if (_page == HomePage::PRESETS) {
+      if (_preset_target_choosing) {
+        // Sub-menu: Channel / DM selection
+        if (c == KEY_UP || c == KEY_DOWN) {
+          _preset_target_sel = 1 - _preset_target_sel;
+          return true;
+        }
+        if (c == KEY_CANCEL) {
+          _preset_target_choosing = false;
+          return true;
+        }
+        if (c == KEY_ENTER) {
+          _preset_target_choosing = false;
+          if (_preset_target_sel == 0) {
+            // Channel: go to channel select, send preset after selection
+            _task->gotoChannelSelect();
+          } else {
+            // DM: go to contact select, send preset after selection
+            _task->gotoContactSelect(false);
+          }
+          return true;
+        }
+        return true;
+      }
       int total_items = PRESET_MSG_COUNT + 4;
       if (c == KEY_UP) {
         _preset_sel = (_preset_sel + total_items - 1) % total_items;
@@ -714,20 +888,23 @@ public:
         }
         if (_preset_sel == PRESET_MSG_COUNT + 1) {
           // "[Reply DM...]" selected
+          _task->_preset_pending = false;
           _task->gotoContactSelect(false);
           return true;
         }
         if (_preset_sel == PRESET_MSG_COUNT + 2) {
           // "[Send GPS DM...]" selected
+          _task->_preset_pending = false;
           _task->gotoContactSelect(true);
           return true;
         }
         if (_preset_sel == PRESET_MSG_COUNT + 3) {
           // "[Channel Msg...]" selected
+          _task->_preset_pending = false;
           _task->gotoChannelSelect();
           return true;
         }
-        // Send preset message
+        // Preset selected: resolve text, then show Channel/DM target sub-menu
         const char* text = NULL;
         char gps_text[48];
 #if ENV_INCLUDE_GPS == 1
@@ -752,18 +929,11 @@ public:
         text = preset_messages[_preset_sel];
 #endif
         if (text != NULL && text[0] != '\0') {
-          ChannelDetails ch;
-          if (the_mesh.getChannel(0, ch)) {
-            uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
-            bool ok = the_mesh.sendGroupMessage(ts, ch.channel,
-                          the_mesh.getNodePrefs()->node_name, text, strlen(text));
-            the_mesh.queueSentChannelMessage(0, ts, text, strlen(text));
-            _task->addToMsgLog("You", text, true, 0, 0);
-            _task->notify(UIEventType::ack);
-            _task->showAlert(ok ? "Sent!" : "Send failed", 800);
-          } else {
-            _task->showAlert("No channel 0", 800);
-          }
+          strncpy(_task->_pending_preset, text, sizeof(_task->_pending_preset) - 1);
+          _task->_pending_preset[sizeof(_task->_pending_preset) - 1] = '\0';
+          _task->_preset_pending = true;
+          _preset_target_choosing = true;
+          _preset_target_sel = 0;
         }
         return true;
       }
@@ -800,6 +970,10 @@ public:
 #endif
     if (c == KEY_ENTER && _page == HomePage::SHUTDOWN) {
       _shutdown_init = true;  // need to wait for button to be released
+      return true;
+    }
+    if ((c == KEY_UP || c == KEY_DOWN) && _page == HomePage::FIRST) {
+      _show_voltage = !_show_voltage;
       return true;
     }
     return false;
@@ -1003,7 +1177,10 @@ public:
           display.print("SND");
         } else if (ch == '\x02') {
           display.setCursor(x + 1, y + 1);
-          display.print(_caps ? "AA" : "aa");
+          display.print(_caps ? "aa" : "AA");
+        } else if (ch == '\x03') {
+          display.setCursor(x + 1, y + 1);
+          display.print("GP");
         } else if (ch == '\x04') {
           display.setCursor(x + 1, y + 1);
           display.print("ESC");
@@ -1078,6 +1255,27 @@ public:
       if (ch == '\x02') {
         // SHIFT: toggle caps
         _caps = !_caps;
+        return true;
+      }
+      if (ch == '\x03') {
+        // GPS paste: append current coordinates to compose buffer
+#if ENV_INCLUDE_GPS == 1
+        LocationProvider* nmea = sensors.getLocationProvider();
+        if (nmea != NULL && nmea->isValid()) {
+          char gps_str[32];
+          snprintf(gps_str, sizeof(gps_str), "%.6f,%.6f",
+                   nmea->getLatitude() / 1000000.0, nmea->getLongitude() / 1000000.0);
+          int gps_len = strlen(gps_str);
+          for (int gi = 0; gi < gps_len && _compose_len < MAX_TEXT_LEN - 1; gi++) {
+            _compose_buf[_compose_len++] = gps_str[gi];
+          }
+          _compose_buf[_compose_len] = '\0';
+        } else {
+          _task->showAlert("No GPS fix", 800);
+        }
+#else
+        _task->showAlert("GPS not enabled", 800);
+#endif
         return true;
       }
       if (ch == '\x04') {
@@ -1200,7 +1398,10 @@ public:
     if (c == KEY_ENTER) {
       ContactInfo ci;
       if (the_mesh.getContactByIdx(_filtered[_contact_sel], ci)) {
-        if (_gps_mode) {
+        if (_task->_preset_pending) {
+          // Send pending preset as DM to selected contact
+          _task->sendPresetDM(ci);
+        } else if (_gps_mode) {
           _task->sendGPSDM(ci);
         } else {
           _task->startDMCompose(ci);
@@ -1209,6 +1410,7 @@ public:
       return true;
     }
     if (c == KEY_CANCEL) {
+      _task->_preset_pending = false;
       _task->gotoHomeScreen();
       return true;
     }
@@ -1290,6 +1492,11 @@ public:
       return true;
     }
     if (c == KEY_ENTER) {
+      if (_task->_preset_pending) {
+        // Send pending preset to selected channel
+        _task->sendPresetToChannel(_channel_sel);
+        return true;
+      }
       ChannelDetails cd;
       if (the_mesh.getChannel(_channel_sel, cd)) {
         _task->startChannelCompose(_channel_sel, cd.name);
@@ -1297,6 +1504,7 @@ public:
       return true;
     }
     if (c == KEY_CANCEL) {
+      _task->_preset_pending = false;
       _task->gotoHomeScreen();
       return true;
     }
@@ -1311,7 +1519,7 @@ const char ComposeScreen::KB_CHARS[KB_ROWS * KB_COLS] = {
   'A','S','D','F','G','H','J','K','L',' ',
   'Z','X','C','V','B','N','M',',','.','-',
   '0','1','2','3','4','5','6','7','8','9',
-  '\x02','@','!','?','#','\'',':',';','\x04','\x01'
+  '\x02','@','!','?','#','\'',':','\x03','\x04','\x01'
 };
 
 void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* node_prefs) {
@@ -1409,13 +1617,13 @@ void UITask::msgRead(int msgcount) {
   }
 }
 
-void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount, int channel_idx) {
+void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount, int channel_idx, const uint8_t* path) {
   _msgcount = msgcount;
 
   // For DMs (path_len=0xFF), from_name is the contact name
   // For channel msgs (channel_idx>=0), from_name is the channel name
   const char* dm_contact = (channel_idx < 0) ? from_name : NULL;
-  addToMsgLog(from_name, text, false, path_len, channel_idx, dm_contact);
+  addToMsgLog(from_name, text, false, path_len, channel_idx, dm_contact, path);
   ((MsgPreviewScreen *) msg_preview)->addPreview(path_len, from_name, text);
 
   // Don't interrupt user if they're composing/selecting contacts/channels
@@ -1511,7 +1719,46 @@ void UITask::sendGPSDM(const ContactInfo& contact) {
   gotoHomeScreen();
 }
 
-void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len, int channel_idx, const char* contact_name) {
+void UITask::sendPresetToChannel(int channel_idx) {
+  if (!_preset_pending || _pending_preset[0] == '\0') {
+    _preset_pending = false;
+    gotoHomeScreen();
+    return;
+  }
+  ChannelDetails ch;
+  if (the_mesh.getChannel(channel_idx, ch)) {
+    uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
+    bool ok = the_mesh.sendGroupMessage(ts, ch.channel,
+                  the_mesh.getNodePrefs()->node_name, _pending_preset, strlen(_pending_preset));
+    the_mesh.queueSentChannelMessage(channel_idx, ts, _pending_preset, strlen(_pending_preset));
+    addToMsgLog("You", _pending_preset, true, 0, channel_idx);
+    notify(UIEventType::ack);
+    showAlert(ok ? "Sent!" : "Send failed", 800);
+  } else {
+    showAlert("No channel", 800);
+  }
+  _preset_pending = false;
+  gotoHomeScreen();
+}
+
+void UITask::sendPresetDM(const ContactInfo& contact) {
+  if (!_preset_pending || _pending_preset[0] == '\0') {
+    _preset_pending = false;
+    gotoHomeScreen();
+    return;
+  }
+  uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
+  uint32_t expected_ack = 0;
+  uint32_t est_timeout = 0;
+  int result = the_mesh.sendMessage(contact, ts, 0, _pending_preset, expected_ack, est_timeout);
+  addToMsgLog("You", _pending_preset, true, 0, -1, contact.name);
+  notify(UIEventType::ack);
+  showAlert(result > 0 ? "DM Sent!" : "DM failed", 800);
+  _preset_pending = false;
+  gotoHomeScreen();
+}
+
+void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len, int channel_idx, const char* contact_name, const uint8_t* path) {
   auto& entry = _msg_log[_msg_log_next];
   entry.timestamp = the_mesh.getRTCClock()->getCurrentTime();
   strncpy(entry.origin, origin, sizeof(entry.origin) - 1);
@@ -1526,6 +1773,11 @@ void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uin
     entry.contact_name[sizeof(entry.contact_name) - 1] = '\0';
   } else {
     entry.contact_name[0] = '\0';
+  }
+  if (path && path_len > 0 && path_len != 0xFF && path_len <= MAX_PATH_SIZE) {
+    memcpy(entry.path, path, path_len);
+  } else {
+    memset(entry.path, 0, sizeof(entry.path));
   }
   _msg_log_next = (_msg_log_next + 1) % MSG_LOG_SIZE;
   if (_msg_log_count < MSG_LOG_SIZE) _msg_log_count++;

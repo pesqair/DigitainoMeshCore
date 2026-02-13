@@ -75,6 +75,8 @@ public:
     curr = NULL;
     _msg_log_count = 0;
     _msg_log_next = 0;
+    _preset_pending = false;
+    _pending_preset[0] = '\0';
   }
   void begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* node_prefs);
 
@@ -86,11 +88,16 @@ public:
     uint8_t path_len;     // hops: 0=direct/self, 0xFF=DM, else=flood hops
     int channel_idx;      // >=0 = channel msg (reply on this channel), -1 = DM
     char contact_name[24]; // for DM: sender name to reply to
+    uint8_t path[MAX_PATH_SIZE]; // repeater hashes along the route
   };
   #define MSG_LOG_SIZE 16
   MessageLogEntry _msg_log[MSG_LOG_SIZE];
   int _msg_log_count;
   int _msg_log_next;
+
+  // Pending preset for Channel/DM target selection
+  char _pending_preset[80];
+  bool _preset_pending;
 
   void gotoHomeScreen() { setCurrScreen(home); }
   void gotoComposeScreen();
@@ -99,7 +106,9 @@ public:
   void startDMCompose(const ContactInfo& contact);
   void startChannelCompose(int channel_idx, const char* channel_name);
   void sendGPSDM(const ContactInfo& contact);
-  void addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len = 0, int channel_idx = -1, const char* contact_name = NULL);
+  void sendPresetToChannel(int channel_idx);
+  void sendPresetDM(const ContactInfo& contact);
+  void addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len = 0, int channel_idx = -1, const char* contact_name = NULL, const uint8_t* path = NULL);
   void showAlert(const char* text, int duration_millis);
   int  getMsgCount() const { return _msgcount; }
   bool hasDisplay() const { return _display != NULL; }
@@ -112,7 +121,7 @@ public:
 
   // from AbstractUITask
   void msgRead(int msgcount) override;
-  void newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount, int channel_idx = -1) override;
+  void newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount, int channel_idx = -1, const uint8_t* path = NULL) override;
   void notify(UIEventType t = UIEventType::none) override;
   void loop() override;
 
