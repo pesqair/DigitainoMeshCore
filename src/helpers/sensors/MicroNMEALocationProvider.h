@@ -95,11 +95,13 @@ public :
     void syncTime() override { nmea.clear(); LocationProvider::syncTime(); }
     long getLatitude() override { return nmea.getLatitude(); }
     long getLongitude() override { return nmea.getLongitude(); }
-    long getAltitude() override { 
+    long getAltitude() override {
         long alt = 0;
         nmea.getAltitude(alt);
         return alt;
     }
+    long getSpeed() override { return nmea.getSpeed(); }
+    long getCourse() override { return nmea.getCourse(); }
     long satellitesCount() override { return nmea.getNumSatellites(); }
     bool isValid() override { return nmea.isValid(); }
 

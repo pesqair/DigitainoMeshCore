@@ -114,6 +114,7 @@ public:
   bool hasDisplay() const { return _display != NULL; }
   bool isButtonPressed() const;
 
+  void extendAutoOff();
   void toggleBuzzer();
   bool getGPSState();
   void toggleGPS();

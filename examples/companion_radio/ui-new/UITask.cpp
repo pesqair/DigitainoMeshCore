@@ -170,6 +170,7 @@ class HomeScreen : public UIScreen {
     ADVERT,
 #if ENV_INCLUDE_GPS == 1
     GPS,
+    NAV,
 #endif
 #if UI_SENSORS_PAGE == 1
     SENSORS,
@@ -194,10 +195,10 @@ class HomeScreen : public UIScreen {
   bool _shutdown_init;
   bool _show_voltage;
   bool _show_speed;
-  float _speed_mph;
-  long _prev_lat;       // microdegrees
-  long _prev_lon;       // microdegrees
-  unsigned long _prev_speed_time;
+  float _max_speed;
+  float _odometer;          // miles traveled
+  unsigned long _odo_last;  // last odometer update time
+  bool _nav_screen_lock;
   AdvertPath recent[UI_RECENT_LIST_SIZE];
 
 
@@ -272,7 +273,7 @@ public:
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
        _preset_sel(0), _msg_sel(0), _msg_sel_prev(0xFF), _msg_scroll_px(0),
        _msg_detail(false), _msg_detail_scroll(0), _shutdown_init(false), _show_voltage(false), _show_speed(false),
-       _speed_mph(0), _prev_lat(0), _prev_lon(0), _prev_speed_time(0),
+       _max_speed(0), _odometer(0), _odo_last(0), _nav_screen_lock(false),
        _preset_target_choosing(false), _preset_target_sel(0), sensors_lpp(200) {  }
 
   void poll() override {
@@ -295,40 +296,33 @@ public:
     renderBatteryIndicator(display, _task->getBattMilliVolts());
 
 #if ENV_INCLUDE_GPS == 1
-    // speed display (between name and battery)
-    if (_show_speed) {
+    // speed + direction HUD (between name and battery) - hidden on NAV page
+    if (_show_speed && _page != HomePage::NAV) {
       LocationProvider* nmea = sensors.getLocationProvider();
+      float speed_mph = 0;
+      bool moving = false;
       if (nmea != NULL && nmea->isValid()) {
-        long lat = nmea->getLatitude();
-        long lon = nmea->getLongitude();
-        unsigned long now = millis();
-        if (_prev_speed_time > 0 && now - _prev_speed_time >= 2000) {
-          // Haversine-lite: approximate distance using equirectangular projection
-          double dlat = (lat - _prev_lat) / 1000000.0 * 0.0174533; // to radians
-          double dlon = (lon - _prev_lon) / 1000000.0 * 0.0174533;
-          double avgLat = ((lat + _prev_lat) / 2.0) / 1000000.0 * 0.0174533;
-          double dx = dlon * cos(avgLat);
-          double dist_km = sqrt(dlat * dlat + dx * dx) * 6371.0;
-          double elapsed_hrs = (now - _prev_speed_time) / 3600000.0;
-          _speed_mph = (float)(dist_km / elapsed_hrs * 0.621371);
-          _prev_lat = lat;
-          _prev_lon = lon;
-          _prev_speed_time = now;
-        } else if (_prev_speed_time == 0) {
-          _prev_lat = lat;
-          _prev_lon = lon;
-          _prev_speed_time = now;
-        }
+        speed_mph = nmea->getSpeed() / 1000.0f * 1.15078f;
+        moving = speed_mph > 2.0f;
       }
-      char spd[10];
-      snprintf(spd, sizeof(spd), "%.0fmph", _speed_mph);
+      // 8-point compass (max 2 chars)
+      static const char* hud_dirs[] = {"N","NE","E","SE","S","SW","W","NW"};
+      char spd[14];
+      if (moving) {
+        float course_deg = (nmea != NULL) ? nmea->getCourse() / 1000.0f : 0;
+        int di = ((int)(course_deg + 22.5f) % 360) / 45;
+        if (di < 0) di = 0;
+        if (di > 7) di = 7;
+        snprintf(spd, sizeof(spd), "%.0f%s", speed_mph, hud_dirs[di]);
+      } else {
+        snprintf(spd, sizeof(spd), "%.0fmph", speed_mph);
+      }
       display.setColor(DisplayDriver::GREEN);
       display.setTextSize(1);
-      // Position centered between name and battery
       int nameEnd = (int)strlen(filtered_name) * 6 + 2;
       int battStart = _show_voltage
-        ? display.width() - 5 * 6 - 2   // voltage text width
-        : display.width() - 24 - 5;      // battery icon
+        ? display.width() - 5 * 6 - 2
+        : display.width() - 24 - 5;
       int spdX = nameEnd + (battStart - nameEnd - (int)strlen(spd) * 6) / 2;
       if (spdX < nameEnd) spdX = nameEnd;
       display.setCursor(spdX, 1);
@@ -749,6 +743,156 @@ public:
         display.drawTextRightAlign(display.width()-1, y, buf);
         y = y + 12;
       }
+    } else if (_page == HomePage::NAV) {
+      LocationProvider* nmea = sensors.getLocationProvider();
+      if (nmea == NULL || !nmea->isValid()) {
+        // No fix state
+        display.setColor(DisplayDriver::YELLOW);
+        display.setTextSize(1);
+        display.drawTextCentered(display.width() / 2, 28, "Waiting for fix...");
+        char satbuf[16];
+        if (nmea != NULL) {
+          snprintf(satbuf, sizeof(satbuf), "Sats: %ld", nmea->satellitesCount());
+        } else {
+          strcpy(satbuf, "No GPS");
+        }
+        display.setColor(DisplayDriver::LIGHT);
+        display.drawTextCentered(display.width() / 2, 42, satbuf);
+      } else {
+        // Speed in mph (getSpeed returns knots * 1000)
+        float speed_mph = nmea->getSpeed() / 1000.0f * 1.15078f;
+        // Track max speed
+        if (speed_mph > _max_speed) _max_speed = speed_mph;
+        // Odometer: accumulate distance (speed * elapsed time)
+        unsigned long now_ms = millis();
+        if (_odo_last > 0 && speed_mph > 1.0f) {
+          float elapsed_hrs = (now_ms - _odo_last) / 3600000.0f;
+          _odometer += speed_mph * elapsed_hrs;
+        }
+        _odo_last = now_ms;
+        // Course in degrees (getCourse returns thousandths of degrees)
+        float course_deg = nmea->getCourse() / 1000.0f;
+        bool moving = speed_mph > 2.0f;
+
+        // 16-point compass lookup
+        static const char* compass_dirs[] = {
+          "N","NNE","NE","ENE","E","ESE","SE","SSE",
+          "S","SSW","SW","WSW","W","WNW","NW","NNW"
+        };
+
+        // === Top row: speed, heading, sats ===
+        display.setColor(DisplayDriver::YELLOW);
+        display.setTextSize(1);
+        char spdbuf[16];
+        snprintf(spdbuf, sizeof(spdbuf), "%.0f/%.0f", speed_mph, _max_speed);
+        display.setCursor(0, 18);
+        display.print(spdbuf);
+
+        // Heading text (center-ish)
+        if (moving) {
+          int dir_idx = ((int)(course_deg + 11.25f) % 360) / 22.5f;
+          if (dir_idx < 0) dir_idx = 0;
+          if (dir_idx > 15) dir_idx = 15;
+          display.setColor(DisplayDriver::GREEN);
+          display.drawTextCentered(display.width() / 2, 18, compass_dirs[dir_idx]);
+        } else {
+          display.setColor(DisplayDriver::LIGHT);
+          display.drawTextCentered(display.width() / 2, 18, "--");
+        }
+
+        // Satellite count (right)
+        char satbuf[8];
+        snprintf(satbuf, sizeof(satbuf), "%ldsat", nmea->satellitesCount());
+        display.setColor(DisplayDriver::LIGHT);
+        int satW = display.getTextWidth(satbuf);
+        display.setCursor(display.width() - satW - 1, 18);
+        display.print(satbuf);
+
+        // === Center: Compass rose ===
+        int cx = display.width() / 2;
+        int cy = 39;
+        int r = 12;
+
+        // Draw compass circle using small dots
+        display.setColor(DisplayDriver::LIGHT);
+        for (int a = 0; a < 360; a += 15) {
+          float rad = a * 3.14159f / 180.0f;
+          int px = cx + (int)(r * sinf(rad));
+          int py = cy - (int)(r * cosf(rad));
+          display.fillRect(px, py, 1, 1);
+        }
+
+        // Cardinal direction labels
+        display.setCursor(cx - 2, cy - r - 8);
+        display.print("N");
+        display.setCursor(cx - 2, cy + r + 2);
+        display.print("S");
+        display.setCursor(cx + r + 2, cy - 3);
+        display.print("E");
+        display.setCursor(cx - r - 8, cy - 3);
+        display.print("W");
+
+        // Direction arrow (only when moving)
+        if (moving) {
+          display.setColor(DisplayDriver::YELLOW);
+          float rad = course_deg * 3.14159f / 180.0f;
+          float sr = sinf(rad);
+          float cr = cosf(rad);
+          // Arrow tip
+          int tipX = cx + (int)((r - 2) * sr);
+          int tipY = cy - (int)((r - 2) * cr);
+          // Arrow base (opposite direction, shorter)
+          int baseX = cx - (int)(4 * sr);
+          int baseY = cy + (int)(4 * cr);
+          // Draw arrow line using small rects
+          int steps = r;
+          for (int s = 0; s <= steps; s++) {
+            int px = baseX + (tipX - baseX) * s / steps;
+            int py = baseY + (tipY - baseY) * s / steps;
+            display.fillRect(px, py, 2, 2);
+          }
+          // Arrow head - wider near tip
+          int lx = tipX - (int)(3 * cr);
+          int ly = tipY - (int)(3 * sr);
+          int rx = tipX + (int)(3 * cr);
+          int ry = tipY + (int)(3 * sr);
+          int mx = tipX + (int)(3 * sr);
+          int my = tipY - (int)(3 * cr);
+          // Draw arrowhead lines
+          for (int s = 0; s <= 4; s++) {
+            int px1 = lx + (mx - lx) * s / 4;
+            int py1 = ly + (my - ly) * s / 4;
+            display.fillRect(px1, py1, 1, 1);
+            int px2 = rx + (mx - rx) * s / 4;
+            int py2 = ry + (my - ry) * s / 4;
+            display.fillRect(px2, py2, 1, 1);
+          }
+        }
+
+        // === Bottom rows: alt + odometer, then coordinates ===
+        display.setColor(DisplayDriver::LIGHT);
+        float alt_ft = nmea->getAltitude() / 1000.0f * 3.28084f;
+        char altbuf[12];
+        snprintf(altbuf, sizeof(altbuf), "%.0fft", alt_ft);
+        display.setCursor(0, 54);
+        display.print(altbuf);
+
+        // Odometer (right side of same row)
+        char odobuf[14];
+        if (_odometer < 10.0f) {
+          snprintf(odobuf, sizeof(odobuf), "%.2fmi", _odometer);
+        } else {
+          snprintf(odobuf, sizeof(odobuf), "%.1fmi", _odometer);
+        }
+        int odoW = display.getTextWidth(odobuf);
+        display.setCursor(display.width() - odoW - 1, 54);
+        display.print(odobuf);
+      }
+      // Keep screen on while nav screen lock is active
+      if (_nav_screen_lock) {
+        _task->extendAutoOff();
+      }
+      return 1000; // refresh every 1s for live GPS data
 #endif
 #if UI_SENSORS_PAGE == 1
     } else if (_page == HomePage::SENSORS) {
@@ -841,10 +985,12 @@ public:
 
   bool handleInput(char c) override {
     if (c == KEY_LEFT || c == KEY_PREV) {
+      _nav_screen_lock = false;
       _page = (_page + HomePage::Count - 1) % HomePage::Count;
       return true;
     }
     if (c == KEY_NEXT || c == KEY_RIGHT) {
+      _nav_screen_lock = false;
       _page = (_page + 1) % HomePage::Count;
       if (_page == HomePage::MESSAGES) {
         _task->showAlert("Message history", 800);
@@ -1033,9 +1179,19 @@ public:
     }
     if (c == KEY_UP && _page == HomePage::GPS) {
       _show_speed = !_show_speed;
-      if (!_show_speed) _speed_mph = 0;
-      _prev_speed_time = 0; // reset so it picks up fresh position
       _task->showAlert(_show_speed ? "Speed: ON" : "Speed: OFF", 800);
+      return true;
+    }
+    if (c == KEY_UP && _page == HomePage::NAV) {
+      _nav_screen_lock = !_nav_screen_lock;
+      _task->showAlert(_nav_screen_lock ? "Screen lock: ON" : "Screen lock: OFF", 800);
+      return true;
+    }
+    if (c == KEY_DOWN && _page == HomePage::NAV) {
+      _max_speed = 0;
+      _odometer = 0;
+      _odo_last = 0;
+      _task->showAlert("Trip reset", 800);
       return true;
     }
 #endif
@@ -2088,6 +2244,10 @@ bool UITask::getGPSState() {
     }
   } 
   return false;
+}
+
+void UITask::extendAutoOff() {
+  _auto_off = millis() + AUTO_OFF_MILLIS;
 }
 
 void UITask::toggleGPS() {
