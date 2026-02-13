@@ -371,11 +371,40 @@ public:
         int buf_idx = (_task->_msg_log_next - 1 - _msg_sel + MSG_LOG_SIZE) % MSG_LOG_SIZE;
         auto& entry = _task->_msg_log[buf_idx];
 
-        // Build detail items: From, To, Hops, Path, Reply hint
-        char detail_items[5][48];
+        // Build detail items: Time, From, To, Hops, Path, Reply hint
+        char detail_items[6][48];
         uint8_t detail_count = 0;
 
-        // Item 0: From
+        // Item 0: Timestamp
+        if (entry.timestamp > 1577836800) { // after 2020-01-01
+          uint32_t t = entry.timestamp;
+          int mins = (t / 60) % 60;
+          int hours = (t / 3600) % 24;
+          int days = (int)(t / 86400);
+          int year = 1970;
+          while (true) {
+            int ydays = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ? 366 : 365;
+            if (days < ydays) break;
+            days -= ydays;
+            year++;
+          }
+          static const int mdays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+          static const char* mnames[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+          bool leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+          int month = 0;
+          for (month = 0; month < 12; month++) {
+            int md = mdays[month] + ((month == 1 && leap) ? 1 : 0);
+            if (days < md) break;
+            days -= md;
+          }
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]),
+                   "%02d-%s %02d:%02d", days + 1, mnames[month], hours, mins);
+        } else {
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Time: unknown");
+        }
+        detail_count++;
+
+        // Item 1: From
         if (entry.is_sent) {
           snprintf(detail_items[detail_count], sizeof(detail_items[0]), "From: You");
         } else if (entry.channel_idx >= 0) {
