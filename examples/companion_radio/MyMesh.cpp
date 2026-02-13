@@ -404,9 +404,19 @@ int MyMesh::getRecentlyHeard(AdvertPath dest[], int max_num) {
   return max_num;
 }
 
-int MyMesh::sendPathFind(const ContactInfo& contact, uint32_t& est_timeout) {
+int MyMesh::sendPathFind(ContactInfo& contact, uint32_t& est_timeout) {
   uint32_t tag;
-  return sendRequest(contact, REQ_TYPE_GET_STATUS, tag, est_timeout);
+  // Path discovery: flood a telemetry request (same approach as iOS app)
+  uint8_t req_data[9];
+  req_data[0] = REQ_TYPE_GET_TELEMETRY_DATA;
+  req_data[1] = ~(TELEM_PERM_BASE);  // inverse permissions mask (only want BASE telemetry)
+  memset(&req_data[2], 0, 3);
+  getRNG()->random(&req_data[5], 4);
+  auto save = contact.out_path_len;    // temporarily force flood
+  contact.out_path_len = -1;
+  int result = sendRequest(contact, req_data, sizeof(req_data), tag, est_timeout);
+  contact.out_path_len = save;
+  return result;
 }
 
 void MyMesh::onContactPathUpdated(const ContactInfo &contact) {

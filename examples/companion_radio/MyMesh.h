@@ -101,7 +101,7 @@ public:
   void enterCLIRescue();
 
   int  getRecentlyHeard(AdvertPath dest[], int max_num);
-  int sendPathFind(const ContactInfo& contact, uint32_t& est_timeout);
+  int sendPathFind(ContactInfo& contact, uint32_t& est_timeout);
 
 protected:
   float getAirtimeBudgetFactor() const override;
