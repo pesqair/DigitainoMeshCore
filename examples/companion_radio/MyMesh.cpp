@@ -2,6 +2,7 @@
 
 #include <Arduino.h> // needed for PlatformIO
 #include <Mesh.h>
+#include <SHA256.h>
 
 #define CMD_APP_START                 1
 #define CMD_SEND_TXT_MSG              2
@@ -270,6 +271,35 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 
     _serial->writeFrame(out_frame, i);
   }
+
+  // Match against sent message hashes for repeat tracking
+  if (_ui && len > 2) {
+    int i = 0;
+    uint8_t header = raw[i++];
+    bool has_tc = (header & PH_ROUTE_MASK) == ROUTE_TYPE_TRANSPORT_FLOOD ||
+                  (header & PH_ROUTE_MASK) == ROUTE_TYPE_TRANSPORT_DIRECT;
+    if (has_tc) i += 4;
+    if (i >= len) return;
+    uint8_t plen = raw[i++];
+    if (i + plen > len) return;
+    const uint8_t* path = &raw[i];
+    i += plen;
+    int payload_len = len - i;
+    if (payload_len <= 0) return;
+
+    // Compute hash the same way as Packet::calculatePacketHash
+    uint8_t payload_type = (header >> PH_TYPE_SHIFT) & PH_TYPE_MASK;
+    SHA256 sha;
+    sha.update(&payload_type, 1);
+    if (payload_type == PAYLOAD_TYPE_TRACE) {
+      sha.update(&plen, sizeof(plen));
+    }
+    sha.update(&raw[i], payload_len);
+    uint8_t rx_hash[MAX_HASH_SIZE];
+    sha.finalize(rx_hash, MAX_HASH_SIZE);
+
+    _ui->matchRxPacket(rx_hash, plen, path, (int16_t)rssi, (int8_t)(snr * 4.0f));
+  }
 }
 
 bool MyMesh::isAutoAddEnabled() const {
@@ -452,6 +482,7 @@ bool MyMesh::filterRecvFloodPacket(mesh::Packet* packet) {
 }
 
 void MyMesh::sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis) {
+  pkt->calculatePacketHash(_last_sent_hash);
   // TODO: dynamic send_scope, depending on recipient and current 'home' Region
   if (send_scope.isNull()) {
     sendFlood(pkt, delay_millis);
@@ -463,6 +494,7 @@ void MyMesh::sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, ui
   }
 }
 void MyMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t delay_millis) {
+  pkt->calculatePacketHash(_last_sent_hash);
   // TODO: have per-channel send_scope
   if (send_scope.isNull()) {
     sendFlood(pkt, delay_millis);
@@ -850,6 +882,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   dirty_contacts_expiry = 0;
   memset(advert_paths, 0, sizeof(advert_paths));
   memset(send_scope.key, 0, sizeof(send_scope.key));
+  memset(_last_sent_hash, 0, sizeof(_last_sent_hash));
 
   // defaults
   memset(&_prefs, 0, sizeof(_prefs));

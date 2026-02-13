@@ -89,6 +89,15 @@ public:
     int channel_idx;      // >=0 = channel msg (reply on this channel), -1 = DM
     char contact_name[24]; // for DM: sender name to reply to
     uint8_t path[MAX_PATH_SIZE]; // repeater hashes along the route
+    int16_t rssi;             // RSSI at receive time (0 = not recorded)
+    int8_t  snr_x4;           // SNR * 4 at receive time (0.25 dB resolution)
+    // Sent message repeat tracking
+    uint8_t packet_hash[MAX_HASH_SIZE]; // for matching RX packets against sent messages
+    uint8_t heard_repeats;    // count of heard retransmissions
+    int16_t repeat_rssi;      // RSSI of most recent repeat heard
+    int8_t  repeat_snr_x4;    // SNR*4 of most recent repeat heard
+    uint8_t repeat_path[MAX_PATH_SIZE]; // path from most recent repeat
+    uint8_t repeat_path_len;  // length of repeat path
   };
   #define MSG_LOG_SIZE 16
   MessageLogEntry _msg_log[MSG_LOG_SIZE];
@@ -108,7 +117,8 @@ public:
   void sendGPSDM(const ContactInfo& contact);
   void sendPresetToChannel(int channel_idx);
   void sendPresetDM(const ContactInfo& contact);
-  void addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len = 0, int channel_idx = -1, const char* contact_name = NULL, const uint8_t* path = NULL);
+  void addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len = 0, int channel_idx = -1, const char* contact_name = NULL, const uint8_t* path = NULL, const uint8_t* packet_hash = NULL);
+  void matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) override;
   void showAlert(const char* text, int duration_millis);
   int  getMsgCount() const { return _msgcount; }
   bool hasDisplay() const { return _display != NULL; }

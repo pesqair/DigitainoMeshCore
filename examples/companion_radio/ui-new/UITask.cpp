@@ -195,6 +195,7 @@ class HomeScreen : public UIScreen {
   bool _shutdown_init;
   bool _show_voltage;
   bool _show_speed;
+  bool _show_snr;
   float _max_speed;
   float _odometer;          // miles traveled
   unsigned long _odo_last;  // last odometer update time
@@ -273,7 +274,7 @@ public:
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
        _preset_sel(0), _msg_sel(0), _msg_sel_prev(0xFF), _msg_scroll_px(0),
        _msg_detail(false), _msg_detail_scroll(0), _shutdown_init(false), _show_voltage(false), _show_speed(false),
-       _max_speed(0), _odometer(0), _odo_last(0), _nav_screen_lock(false),
+       _show_snr(false), _max_speed(0), _odometer(0), _odo_last(0), _nav_screen_lock(false),
        _preset_target_choosing(false), _preset_target_sel(0), sensors_lpp(200) {  }
 
   void poll() override {
@@ -292,12 +293,26 @@ public:
     display.setCursor(0, 0);
     display.print(filtered_name);
 
-    // battery voltage
-    renderBatteryIndicator(display, _task->getBattMilliVolts());
+    // battery voltage (hidden when SNR display is active)
+    if (!_show_snr) {
+      renderBatteryIndicator(display, _task->getBattMilliVolts());
+    }
 
+    // SNR/RSSI display OR speed HUD in the top bar (SNR takes priority over speed)
+    if (_show_snr) {
+      char snr_buf[16];
+      snprintf(snr_buf, sizeof(snr_buf), "%.0f/%.1f", radio_driver.getLastRSSI(), radio_driver.getLastSNR());
+      display.setColor(DisplayDriver::GREEN);
+      display.setTextSize(1);
+      int snrX = display.width() - (int)strlen(snr_buf) * 6 - 2;
+      int nameEnd = (int)strlen(filtered_name) * 6 + 2;
+      if (snrX < nameEnd) snrX = nameEnd;
+      display.setCursor(snrX, 1);
+      display.print(snr_buf);
+    }
 #if ENV_INCLUDE_GPS == 1
-    // speed + direction HUD (between name and battery) - hidden on NAV page
-    if (_show_speed && _page != HomePage::NAV) {
+    else if (_show_speed && _page != HomePage::NAV) {
+      // speed + direction HUD (between name and battery) - hidden on NAV page
       LocationProvider* nmea = sensors.getLocationProvider();
       float speed_mph = 0;
       bool moving = false;
@@ -414,8 +429,8 @@ public:
         int buf_idx = (_task->_msg_log_next - 1 - _msg_sel + MSG_LOG_SIZE) % MSG_LOG_SIZE;
         auto& entry = _task->_msg_log[buf_idx];
 
-        // Build detail items: Time, From, To, Hops, Path, Reply hint
-        char detail_items[6][48];
+        // Build detail items: Time, From, To, Hops, Repeats, Signal, Path, Reply hint
+        char detail_items[10][48];
         uint8_t detail_count = 0;
 
         // Item 0: Timestamp
@@ -490,7 +505,41 @@ public:
         }
         detail_count++;
 
-        // Item 3: Path (only if there are repeater hops)
+        // Sent messages: Repeats, repeat Signal, repeat Path
+        if (entry.is_sent && entry.heard_repeats > 0) {
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]),
+                   "Repeats: %d", entry.heard_repeats);
+          detail_count++;
+
+          if (entry.repeat_rssi != 0) {
+            float rsnr = (float)entry.repeat_snr_x4 / 4.0f;
+            snprintf(detail_items[detail_count], sizeof(detail_items[0]),
+                     "Signal: %d/%.1f", entry.repeat_rssi, rsnr);
+            detail_count++;
+          }
+
+          if (entry.repeat_path_len > 0) {
+            char* p = detail_items[detail_count];
+            int pos = snprintf(p, 6, "Path:");
+            for (int i = 0; i < entry.repeat_path_len && pos < 46; i++) {
+              if (i > 0) {
+                pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, ">");
+              }
+              pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, "%02X", entry.repeat_path[i]);
+            }
+            detail_count++;
+          }
+        }
+
+        // Received messages: Signal (RSSI/SNR)
+        if (!entry.is_sent && entry.rssi != 0) {
+          float snr = (float)entry.snr_x4 / 4.0f;
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]),
+                   "Signal: %d/%.1f", entry.rssi, snr);
+          detail_count++;
+        }
+
+        // Received messages: Path (only if there are repeater hops)
         if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF) {
           char* p = detail_items[detail_count];
           int pos = snprintf(p, 6, "Path:");
@@ -1195,6 +1244,11 @@ public:
       return true;
     }
 #endif
+    if (c == KEY_UP && _page == HomePage::RADIO) {
+      _show_snr = !_show_snr;
+      _task->showAlert(_show_snr ? "SNR: ON" : "SNR: OFF", 800);
+      return true;
+    }
 #if UI_SENSORS_PAGE == 1
     if (c == KEY_ENTER && _page == HomePage::SENSORS) {
       _task->toggleGPS();
@@ -1463,7 +1517,7 @@ public:
             uint32_t est_timeout = 0;
             int result = the_mesh.sendMessage(_dm_contact, ts, 0, _compose_buf, expected_ack, est_timeout);
             // Note: DM sync to companion app not supported - protocol has no outgoing flag
-            _task->addToMsgLog("You", _compose_buf, true, 0, -1, _dm_contact.name);
+            _task->addToMsgLog("You", _compose_buf, true, 0, -1, _dm_contact.name, NULL, the_mesh.getLastSentHash());
             _task->notify(UIEventType::ack);
             _task->showAlert(result > 0 ? "DM Sent!" : "DM failed", 800);
           } else {
@@ -1474,7 +1528,7 @@ public:
               bool ok = the_mesh.sendGroupMessage(ts, ch_det.channel,
                             the_mesh.getNodePrefs()->node_name, _compose_buf, _compose_len);
               the_mesh.queueSentChannelMessage(ch_idx, ts, _compose_buf, _compose_len);
-              _task->addToMsgLog("You", _compose_buf, true, 0, ch_idx);
+              _task->addToMsgLog("You", _compose_buf, true, 0, ch_idx, NULL, NULL, the_mesh.getLastSentHash());
               _task->notify(UIEventType::ack);
               _task->showAlert(ok ? "Sent!" : "Send failed", 800);
             } else {
@@ -1941,7 +1995,7 @@ void UITask::sendGPSDM(const ContactInfo& contact) {
     uint32_t est_timeout = 0;
     int result = the_mesh.sendMessage(contact, ts, 0, gps_text, expected_ack, est_timeout);
     // Note: DM sync to companion app not supported - protocol has no outgoing flag
-    addToMsgLog("You", gps_text, true, 0, -1, contact.name);
+    addToMsgLog("You", gps_text, true, 0, -1, contact.name, NULL, the_mesh.getLastSentHash());
     notify(UIEventType::ack);
     showAlert(result > 0 ? "GPS DM Sent!" : "GPS DM failed", 800);
   } else {
@@ -1965,7 +2019,7 @@ void UITask::sendPresetToChannel(int channel_idx) {
     bool ok = the_mesh.sendGroupMessage(ts, ch.channel,
                   the_mesh.getNodePrefs()->node_name, _pending_preset, strlen(_pending_preset));
     the_mesh.queueSentChannelMessage(channel_idx, ts, _pending_preset, strlen(_pending_preset));
-    addToMsgLog("You", _pending_preset, true, 0, channel_idx);
+    addToMsgLog("You", _pending_preset, true, 0, channel_idx, NULL, NULL, the_mesh.getLastSentHash());
     notify(UIEventType::ack);
     showAlert(ok ? "Sent!" : "Send failed", 800);
   } else {
@@ -1985,14 +2039,14 @@ void UITask::sendPresetDM(const ContactInfo& contact) {
   uint32_t expected_ack = 0;
   uint32_t est_timeout = 0;
   int result = the_mesh.sendMessage(contact, ts, 0, _pending_preset, expected_ack, est_timeout);
-  addToMsgLog("You", _pending_preset, true, 0, -1, contact.name);
+  addToMsgLog("You", _pending_preset, true, 0, -1, contact.name, NULL, the_mesh.getLastSentHash());
   notify(UIEventType::ack);
   showAlert(result > 0 ? "DM Sent!" : "DM failed", 800);
   _preset_pending = false;
   gotoHomeScreen();
 }
 
-void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len, int channel_idx, const char* contact_name, const uint8_t* path) {
+void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len, int channel_idx, const char* contact_name, const uint8_t* path, const uint8_t* packet_hash) {
   auto& entry = _msg_log[_msg_log_next];
   entry.timestamp = the_mesh.getRTCClock()->getCurrentTime();
   strncpy(entry.origin, origin, sizeof(entry.origin) - 1);
@@ -2013,8 +2067,51 @@ void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uin
   } else {
     memset(entry.path, 0, sizeof(entry.path));
   }
+  if (!is_sent) {
+    entry.rssi = (int16_t)radio_driver.getLastRSSI();
+    entry.snr_x4 = (int8_t)(radio_driver.getLastSNR() * 4.0f);
+  } else {
+    entry.rssi = 0;
+    entry.snr_x4 = 0;
+  }
+  // Repeat tracking for sent messages
+  if (is_sent && packet_hash) {
+    memcpy(entry.packet_hash, packet_hash, MAX_HASH_SIZE);
+  } else {
+    memset(entry.packet_hash, 0, MAX_HASH_SIZE);
+  }
+  entry.heard_repeats = 0;
+  entry.repeat_rssi = 0;
+  entry.repeat_snr_x4 = 0;
+  entry.repeat_path_len = 0;
+  memset(entry.repeat_path, 0, sizeof(entry.repeat_path));
+
   _msg_log_next = (_msg_log_next + 1) % MSG_LOG_SIZE;
   if (_msg_log_count < MSG_LOG_SIZE) _msg_log_count++;
+}
+
+void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) {
+  for (int i = 0; i < _msg_log_count; i++) {
+    int idx = (_msg_log_next - 1 - i + MSG_LOG_SIZE) % MSG_LOG_SIZE;
+    auto& entry = _msg_log[idx];
+    if (!entry.is_sent) continue;
+    // Check if packet_hash is non-zero (was stored)
+    bool has_hash = false;
+    for (int j = 0; j < MAX_HASH_SIZE; j++) {
+      if (entry.packet_hash[j] != 0) { has_hash = true; break; }
+    }
+    if (!has_hash) continue;
+    if (memcmp(entry.packet_hash, packet_hash, MAX_HASH_SIZE) == 0) {
+      if (entry.heard_repeats < 255) entry.heard_repeats++;
+      entry.repeat_rssi = rssi;
+      entry.repeat_snr_x4 = snr_x4;
+      if (path_len <= MAX_PATH_SIZE) {
+        memcpy(entry.repeat_path, path, path_len);
+        entry.repeat_path_len = path_len;
+      }
+      break;
+    }
+  }
 }
 
 /*
