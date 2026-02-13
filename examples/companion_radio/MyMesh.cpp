@@ -437,7 +437,7 @@ void MyMesh::onContactPathUpdated(const ContactInfo &contact) {
   dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
 
   if (_ui) {
-    _ui->onPathUpdated(contact);
+    _ui->onPathUpdated(contact, (int16_t)_radio->getLastRSSI(), (int8_t)(_radio->getLastSNR() * 4));
   }
 }
 

@@ -204,6 +204,55 @@ class HomeScreen : public UIScreen {
   bool _nav_screen_lock;
   AdvertPath recent[UI_RECENT_LIST_SIZE];
 
+  // Cached contact info (persists across page visits)
+  struct ContactCache {
+    uint8_t pub_key_prefix[4];  // first 4 bytes of pub key for matching
+    bool valid;
+    // Path info
+    bool has_path_info;
+    uint8_t path_hops;
+    uint8_t path[MAX_PATH_SIZE];
+    int16_t rssi;
+    int8_t  snr_x4;
+    // Telemetry info
+    bool has_telem;
+    float voltage;
+  };
+  #define CT_CACHE_SIZE 16
+  ContactCache _ct_cache[CT_CACHE_SIZE];
+
+  ContactCache* findOrCreateCache(const uint8_t* pub_key) {
+    // Find existing
+    for (int i = 0; i < CT_CACHE_SIZE; i++) {
+      if (_ct_cache[i].valid && memcmp(_ct_cache[i].pub_key_prefix, pub_key, 4) == 0)
+        return &_ct_cache[i];
+    }
+    // Find empty slot
+    for (int i = 0; i < CT_CACHE_SIZE; i++) {
+      if (!_ct_cache[i].valid) {
+        memcpy(_ct_cache[i].pub_key_prefix, pub_key, 4);
+        _ct_cache[i].valid = true;
+        _ct_cache[i].has_path_info = false;
+        _ct_cache[i].has_telem = false;
+        return &_ct_cache[i];
+      }
+    }
+    // Overwrite oldest (slot 0)
+    memcpy(_ct_cache[0].pub_key_prefix, pub_key, 4);
+    _ct_cache[0].valid = true;
+    _ct_cache[0].has_path_info = false;
+    _ct_cache[0].has_telem = false;
+    return &_ct_cache[0];
+  }
+
+  ContactCache* findCache(const uint8_t* pub_key) {
+    for (int i = 0; i < CT_CACHE_SIZE; i++) {
+      if (_ct_cache[i].valid && memcmp(_ct_cache[i].pub_key_prefix, pub_key, 4) == 0)
+        return &_ct_cache[i];
+    }
+    return NULL;
+  }
+
   // Contacts page state
   uint8_t _ct_sel;           // selected contact in list
   uint16_t _ct_sorted[64];   // sorted contact indices (favorites first)
@@ -211,6 +260,7 @@ class HomeScreen : public UIScreen {
   bool _ct_action;           // true = showing action menu for selected contact
   uint8_t _ct_action_sel;    // selected action in menu
   uint8_t _ct_action_count;  // number of available actions
+  uint8_t _ct_detail_scroll; // scroll offset in detail/action view
   // Path discovery sub-state
   bool _ct_path_pending;
   unsigned long _ct_path_timeout;
@@ -221,7 +271,6 @@ class HomeScreen : public UIScreen {
   bool _ct_telem_pending;
   unsigned long _ct_telem_timeout;
   bool _ct_telem_done;
-  float _ct_telem_voltage;
 
   void rebuildContactsSorted() {
     _ct_count = 0;
@@ -316,10 +365,10 @@ public:
        _msg_detail(false), _msg_detail_scroll(0), _shutdown_init(false), _show_voltage(false), _show_speed(false),
        _show_snr(false), _max_speed(0), _odometer(0), _odo_last(0), _nav_screen_lock(false),
        _preset_target_choosing(false), _preset_target_sel(0),
-       _ct_sel(0), _ct_count(0), _ct_action(false), _ct_action_sel(0), _ct_action_count(0),
+       _ct_sel(0), _ct_count(0), _ct_action(false), _ct_action_sel(0), _ct_action_count(0), _ct_detail_scroll(0),
        _ct_path_pending(false), _ct_path_found(false),
        _ct_telem_pending(false), _ct_telem_done(false),
-       sensors_lpp(200) {  }
+       sensors_lpp(200) { memset(_ct_cache, 0, sizeof(_ct_cache)); }
 
   void poll() override {
     if (_shutdown_init && !_task->isButtonPressed()) {  // must wait for USR button to be released
@@ -775,8 +824,13 @@ public:
         snprintf(tmp, sizeof(tmp), "Telemetry: %s", _ct_target_name);
         display.drawTextEllipsized(0, 24, display.width(), tmp);
         if (_ct_telem_done) {
+          ContactCache* cc = findCache(_ct_path_key);
           display.setColor(DisplayDriver::LIGHT);
-          snprintf(tmp, sizeof(tmp), "Battery: %.2fV", _ct_telem_voltage);
+          if (cc && cc->has_telem) {
+            snprintf(tmp, sizeof(tmp), "Battery: %.2fV", cc->voltage);
+          } else {
+            snprintf(tmp, sizeof(tmp), "No data");
+          }
           display.setCursor(0, 40);
           display.print(tmp);
         } else {
@@ -793,31 +847,31 @@ public:
         snprintf(tmp, sizeof(tmp), "Finding: %s", _ct_target_name);
         display.drawTextEllipsized(0, 24, display.width(), tmp);
         if (_ct_path_found) {
-          // Look up the contact to show hop count
-          ContactInfo ci;
-          int n = the_mesh.getNumContacts();
-          for (int i = 0; i < n; i++) {
-            if (the_mesh.getContactByIdx(i, ci) && memcmp(ci.id.pub_key, _ct_path_key, PUB_KEY_SIZE) == 0) {
-              if (ci.out_path_len > 0) {
-                snprintf(tmp, sizeof(tmp), "Found! %d hops", ci.out_path_len);
-                // Show hop hashes
-                char hops[48] = "";
-                int pos = 0;
-                for (int h = 0; h < ci.out_path_len && pos < 44; h++) {
-                  pos += snprintf(hops + pos, sizeof(hops) - pos, "%s%02X", h > 0 ? " " : "", ci.out_path[h]);
-                }
-                display.setColor(DisplayDriver::LIGHT);
-                display.drawTextEllipsized(0, 52, display.width(), hops);
-              } else if (ci.out_path_len == 0) {
-                snprintf(tmp, sizeof(tmp), "Found! Direct");
-              } else {
-                snprintf(tmp, sizeof(tmp), "Path updated!");
+          ContactCache* cc = findCache(_ct_path_key);
+          if (cc && cc->has_path_info) {
+            if (cc->path_hops > 0) {
+              snprintf(tmp, sizeof(tmp), "Found! %d hops", cc->path_hops);
+              char hops[48] = "";
+              int pos = 0;
+              for (int h = 0; h < cc->path_hops && pos < 44; h++) {
+                pos += snprintf(hops + pos, sizeof(hops) - pos, "%s%02X", h > 0 ? " " : "", cc->path[h]);
               }
-              break;
+              display.setColor(DisplayDriver::LIGHT);
+              display.drawTextEllipsized(0, 52, display.width(), hops);
+            } else {
+              snprintf(tmp, sizeof(tmp), "Found! Direct");
             }
+            float snr_f = (float)cc->snr_x4 / 4.0f;
+            char sig[32];
+            snprintf(sig, sizeof(sig), "RSSI:%d SNR:%.1f", cc->rssi, snr_f);
+            display.setColor(DisplayDriver::LIGHT);
+            display.drawTextEllipsized(0, 40, display.width() / 2, tmp);
+            display.drawTextEllipsized(display.width() / 2, 40, display.width() / 2, sig);
+          } else {
+            snprintf(tmp, sizeof(tmp), "Path updated!");
+            display.setColor(DisplayDriver::YELLOW);
+            display.drawTextCentered(display.width() / 2, 40, tmp);
           }
-          display.setColor(DisplayDriver::YELLOW);
-          display.drawTextCentered(display.width() / 2, 40, tmp);
         } else {
           display.setColor(DisplayDriver::LIGHT);
           display.drawTextCentered(display.width() / 2, 40, "Searching...");
@@ -827,39 +881,71 @@ public:
           }
         }
       } else if (_ct_action) {
-        // Action menu for selected contact
+        // Contact detail + action menu
         ContactInfo ci;
         if (the_mesh.getContactByIdx(_ct_sorted[_ct_sel], ci)) {
           display.setColor(DisplayDriver::YELLOW);
           display.drawTextEllipsized(0, 18, display.width(), ci.name);
 
-          // Build action list based on type
-          const char* actions[4];
-          _ct_action_count = 0;
+          // Build combined list: actions first, then cached info lines
+          const char* items[10];
+          bool item_is_action[10];
+          int item_count = 0;
+
+          // Actions
           if (ci.type == ADV_TYPE_CHAT) {
-            actions[_ct_action_count++] = "Send DM";
-            actions[_ct_action_count++] = "Find Path";
-            actions[_ct_action_count++] = "Telemetry";
+            items[item_count] = "Send DM"; item_is_action[item_count++] = true;
+            items[item_count] = "Find Path"; item_is_action[item_count++] = true;
+            items[item_count] = "Telemetry"; item_is_action[item_count++] = true;
 #if ENV_INCLUDE_GPS == 1
-            actions[_ct_action_count++] = "Send GPS";
+            items[item_count] = "Send GPS"; item_is_action[item_count++] = true;
 #endif
-          } else if (ci.type == ADV_TYPE_REPEATER) {
-            actions[_ct_action_count++] = "Find Path";
-            actions[_ct_action_count++] = "Telemetry";
           } else {
-            actions[_ct_action_count++] = "Find Path";
-            actions[_ct_action_count++] = "Telemetry";
+            items[item_count] = "Find Path"; item_is_action[item_count++] = true;
+            items[item_count] = "Telemetry"; item_is_action[item_count++] = true;
           }
-          if (_ct_action_sel >= _ct_action_count) _ct_action_sel = _ct_action_count - 1;
+          _ct_action_count = item_count;  // number of selectable actions
+
+          // Cached info lines (not selectable)
+          static char info_lines[4][40];
+          ContactCache* cc = findCache(ci.id.pub_key);
+          if (cc && cc->has_path_info) {
+            if (cc->path_hops > 0) {
+              char hops[24] = "";
+              int pos = 0;
+              for (int h = 0; h < cc->path_hops && pos < 20; h++) {
+                pos += snprintf(hops + pos, sizeof(hops) - pos, "%s%02X", h > 0 ? " " : "", cc->path[h]);
+              }
+              snprintf(info_lines[0], sizeof(info_lines[0]), "Path: %s", hops);
+            } else {
+              strcpy(info_lines[0], "Path: Direct");
+            }
+            items[item_count] = info_lines[0]; item_is_action[item_count++] = false;
+            float snr_f = (float)cc->snr_x4 / 4.0f;
+            snprintf(info_lines[1], sizeof(info_lines[1]), "RSSI:%d SNR:%.1f", cc->rssi, snr_f);
+            items[item_count] = info_lines[1]; item_is_action[item_count++] = false;
+          }
+          if (cc && cc->has_telem) {
+            snprintf(info_lines[2], sizeof(info_lines[2]), "Batt: %.2fV", cc->voltage);
+            items[item_count] = info_lines[2]; item_is_action[item_count++] = false;
+          }
+
+          if (_ct_action_sel >= _ct_action_count && _ct_action_count > 0)
+            _ct_action_sel = _ct_action_count - 1;
+          if (_ct_detail_scroll > item_count - 1 && item_count > 0)
+            _ct_detail_scroll = item_count - 1;
+
+          int visible = 3;
           int y = 30;
-          for (int i = 0; i < _ct_action_count && i < 4; i++, y += 12) {
-            if (i == _ct_action_sel) {
+          for (int i = _ct_detail_scroll; i < _ct_detail_scroll + visible && i < item_count; i++, y += 12) {
+            if (item_is_action[i] && i == _ct_action_sel) {
               display.setColor(DisplayDriver::YELLOW);
               display.setCursor(0, y);
               display.print(">");
             }
-            display.setColor(i == _ct_action_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
-            display.drawTextEllipsized(8, y, display.width() - 8, actions[i]);
+            display.setColor(item_is_action[i] && i == _ct_action_sel ? DisplayDriver::YELLOW :
+                           item_is_action[i] ? DisplayDriver::LIGHT : DisplayDriver::LIGHT);
+            display.drawTextEllipsized(8, y, display.width() - 8, items[i]);
           }
         }
       } else {
@@ -1257,17 +1343,36 @@ public:
         return true;
       }
       if (_ct_action) {
-        // Action menu
+        // Action/detail menu
         if (c == KEY_CANCEL) {
           _ct_action = false;
+          _ct_detail_scroll = 0;
           return true;
         }
         if (c == KEY_UP) {
-          if (_ct_action_sel > 0) _ct_action_sel--;
+          if (_ct_action_sel > 0) {
+            _ct_action_sel--;
+            if (_ct_action_sel < _ct_detail_scroll) _ct_detail_scroll = _ct_action_sel;
+          } else if (_ct_detail_scroll > 0) {
+            _ct_detail_scroll--;
+          }
           return true;
         }
         if (c == KEY_DOWN) {
-          if (_ct_action_sel < _ct_action_count - 1) _ct_action_sel++;
+          if (_ct_action_sel < _ct_action_count - 1) {
+            _ct_action_sel++;
+            if (_ct_action_sel >= _ct_detail_scroll + 3) _ct_detail_scroll = _ct_action_sel - 2;
+          } else {
+            // Scroll down into info lines
+            ContactInfo ci;
+            if (the_mesh.getContactByIdx(_ct_sorted[_ct_sel], ci)) {
+              ContactCache* cc = findCache(ci.id.pub_key);
+              int total = _ct_action_count;
+              if (cc && cc->has_path_info) total += 2;
+              if (cc && cc->has_telem) total += 1;
+              if (_ct_detail_scroll + 3 < total) _ct_detail_scroll++;
+            }
+          }
           return true;
         }
         if (c == KEY_ENTER) {
@@ -1318,6 +1423,7 @@ public:
                 _ct_telem_timeout = millis() + est_timeout + 2000;
                 strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
                 _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
+                memcpy(_ct_path_key, ci.id.pub_key, PUB_KEY_SIZE);
               } else {
                 _task->showAlert("Send failed", 800);
               }
@@ -1345,6 +1451,7 @@ public:
         if (c == KEY_ENTER) {
           _ct_action = true;
           _ct_action_sel = 0;
+          _ct_detail_scroll = 0;
           return true;
         }
       }
@@ -2414,9 +2521,20 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
   }
 }
 
-void UITask::onPathUpdated(const ContactInfo& contact) {
+void UITask::onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_x4) {
   if (!home) return;  // not yet initialized
   HomeScreen* hs = (HomeScreen*)home;
+
+  // Cache path info for this contact
+  HomeScreen::ContactCache* cc = hs->findOrCreateCache(contact.id.pub_key);
+  cc->has_path_info = true;
+  cc->path_hops = contact.out_path_len > 0 ? contact.out_path_len : 0;
+  if (contact.out_path_len > 0) {
+    memcpy(cc->path, contact.out_path, contact.out_path_len);
+  }
+  cc->rssi = rssi;
+  cc->snr_x4 = snr_x4;
+
   if (!hs->_ct_path_pending) return;
   if (memcmp(contact.id.pub_key, hs->_ct_path_key, PUB_KEY_SIZE) != 0) return;
   hs->_ct_path_found = true;
@@ -2425,8 +2543,13 @@ void UITask::onPathUpdated(const ContactInfo& contact) {
 void UITask::onTelemetryResponse(const ContactInfo& contact, float voltage) {
   if (!home) return;
   HomeScreen* hs = (HomeScreen*)home;
+
+  // Cache telemetry for this contact
+  HomeScreen::ContactCache* cc = hs->findOrCreateCache(contact.id.pub_key);
+  cc->has_telem = true;
+  cc->voltage = voltage;
+
   if (!hs->_ct_telem_pending) return;
-  hs->_ct_telem_voltage = voltage;
   hs->_ct_telem_done = true;
   hs->_ct_telem_pending = false;
 }
