@@ -1165,6 +1165,7 @@ void MyMesh::handleCmdFrame(size_t len) {
         memcpy(&out_frame[2], &expected_ack, 4);
         memcpy(&out_frame[6], &est_timeout, 4);
         _serial->writeFrame(out_frame, 10);
+        if (_ui) _ui->addToMsgLog("You", text, true, 0, -1, recipient->name, NULL, _last_sent_hash);
       }
     } else {
       writeErrFrame(recipient == NULL
@@ -1187,6 +1188,7 @@ void MyMesh::handleCmdFrame(size_t len) {
       bool success = getChannel(channel_idx, channel);
       if (success && sendGroupMessage(msg_timestamp, channel.channel, _prefs.node_name, text, len - i)) {
         writeOKFrame();
+        if (_ui) _ui->addToMsgLog("You", text, true, 0, channel_idx, NULL, NULL, _last_sent_hash);
       } else {
         writeErrFrame(ERR_CODE_NOT_FOUND); // bad channel_idx
       }

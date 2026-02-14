@@ -684,10 +684,10 @@ public:
 
           if (entry.repeat_path_len > 0) {
             char* p = detail_items[detail_count];
-            int pos = snprintf(p, 6, "Path:");
+            int pos = snprintf(p, sizeof(detail_items[0]), "Heard by:");
             for (int i = 0; i < entry.repeat_path_len && pos < 46; i++) {
               if (i > 0) {
-                pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, ">");
+                pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, ",");
               }
               pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, "%02X", entry.repeat_path[i]);
             }
@@ -731,6 +731,9 @@ public:
           detail_count++;
         } else if (entry.contact_name[0] != '\0' && !entry.is_sent) {
           snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Enter=Reply DM");
+          detail_count++;
+        } else if (entry.is_sent && entry.heard_repeats == 0) {
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Enter=Resend");
           detail_count++;
         } else {
           snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Cancel=Back");
@@ -794,13 +797,29 @@ public:
               display.setCursor(0, y);
               display.print(">");
             }
+            // Build prefix (fixed) and body (scrollable) separately
+            char prefix[8] = "";
             char line[80];
+            if (entry.is_sent && entry.heard_repeats > 0) {
+              snprintf(prefix, sizeof(prefix), "(%d) ", entry.heard_repeats);
+            } else if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF) {
+              snprintf(prefix, sizeof(prefix), "<%02X> ", entry.path[entry.path_len - 1]);
+            }
             snprintf(line, sizeof(line), "%s: %s", entry.origin, entry.text);
 
+            int prefix_w = display.getTextWidth(prefix);
+            int body_x = 8 + prefix_w;
+            int body_avail = avail_w - prefix_w;
+
             if (v == _msg_sel) {
+              // Draw fixed prefix
+              if (prefix[0]) {
+                display.setCursor(8, y);
+                display.print(prefix);
+              }
               // Selected item: horizontal scroll if text exceeds width
               int text_w = display.getTextWidth(line);
-              if (text_w > avail_w) {
+              if (text_w > body_avail) {
                 int char_w = display.getTextWidth("A");
                 int char_off = (char_w > 0) ? _msg_scroll_px / char_w : 0;
                 int line_len = strlen(line);
@@ -808,14 +827,16 @@ public:
                   _msg_scroll_px = 0;
                   char_off = 0;
                 }
-                display.setCursor(8, y);
-                display.drawTextEllipsized(8, y, avail_w, &line[char_off]);
+                display.drawTextEllipsized(body_x, y, body_avail, &line[char_off]);
                 _msg_scroll_px += char_w;
               } else {
-                display.drawTextEllipsized(8, y, avail_w, line);
+                display.drawTextEllipsized(body_x, y, body_avail, line);
               }
             } else {
-              display.drawTextEllipsized(8, y, avail_w, line);
+              // Non-selected: draw prefix + body together, ellipsized
+              char full[88];
+              snprintf(full, sizeof(full), "%s%s", prefix, line);
+              display.drawTextEllipsized(8, y, avail_w, full);
             }
           }
         }
@@ -1731,6 +1752,52 @@ public:
               }
             }
             _task->showAlert("Contact not found", 800);
+            return true;
+          }
+          // Resend: sent message with no heard repeats
+          if (entry.is_sent && entry.heard_repeats == 0) {
+            bool resent = false;
+            if (entry.channel_idx < 0 && entry.contact_name[0] != '\0') {
+              // DM resend
+              ContactInfo ci;
+              int n = the_mesh.getNumContacts();
+              for (int i = 0; i < n; i++) {
+                if (the_mesh.getContactByIdx(i, ci) && strcmp(ci.name, entry.contact_name) == 0) {
+                  uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
+                  uint32_t expected_ack = 0;
+                  uint32_t est_timeout = 0;
+                  the_mesh.sendMessage(ci, ts, 0, entry.text, expected_ack, est_timeout);
+                  resent = true;
+                  break;
+                }
+              }
+              if (!resent) {
+                _task->showAlert("Contact not found", 800);
+                return true;
+              }
+            } else if (entry.channel_idx >= 0) {
+              // Channel resend
+              ChannelDetails cd;
+              if (the_mesh.getChannel(entry.channel_idx, cd)) {
+                uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
+                the_mesh.sendGroupMessage(ts, cd.channel,
+                  the_mesh.getNodePrefs()->node_name, entry.text, strlen(entry.text));
+                resent = true;
+              } else {
+                _task->showAlert("No channel", 800);
+                return true;
+              }
+            }
+            if (resent) {
+              entry.tx_count++;
+              // Append TX count marker to text
+              int tlen = strlen(entry.text);
+              snprintf(entry.text + tlen, sizeof(entry.text) - tlen, " (TX: #%d)", entry.tx_count);
+              memcpy(entry.packet_hash, the_mesh.getLastSentHash(), MAX_HASH_SIZE);
+              entry.heard_repeats = 0;
+              _msg_detail = false;
+              _task->showAlert("Resent!", 800);
+            }
             return true;
           }
           return true;
@@ -2737,6 +2804,7 @@ void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uin
   entry.repeat_snr_x4 = 0;
   entry.repeat_path_len = 0;
   memset(entry.repeat_path, 0, sizeof(entry.repeat_path));
+  entry.tx_count = 1;
 
   _msg_log_next = (_msg_log_next + 1) % MSG_LOG_SIZE;
   if (_msg_log_count < MSG_LOG_SIZE) _msg_log_count++;
@@ -2757,9 +2825,16 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
       if (entry.heard_repeats < 255) entry.heard_repeats++;
       entry.repeat_rssi = rssi;
       entry.repeat_snr_x4 = snr_x4;
-      if (path_len <= MAX_PATH_SIZE) {
-        memcpy(entry.repeat_path, path, path_len);
-        entry.repeat_path_len = path_len;
+      // Accumulate unique repeater hashes from this path
+      for (int p = 0; p < path_len; p++) {
+        // Check if this repeater hash is already stored
+        bool found = false;
+        for (int r = 0; r < entry.repeat_path_len; r++) {
+          if (entry.repeat_path[r] == path[p]) { found = true; break; }
+        }
+        if (!found && entry.repeat_path_len < MAX_PATH_SIZE) {
+          entry.repeat_path[entry.repeat_path_len++] = path[p];
+        }
       }
       break;
     }

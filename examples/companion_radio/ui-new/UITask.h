@@ -96,8 +96,9 @@ public:
     uint8_t heard_repeats;    // count of heard retransmissions
     int16_t repeat_rssi;      // RSSI of most recent repeat heard
     int8_t  repeat_snr_x4;    // SNR*4 of most recent repeat heard
-    uint8_t repeat_path[MAX_PATH_SIZE]; // path from most recent repeat
-    uint8_t repeat_path_len;  // length of repeat path
+    uint8_t repeat_path[MAX_PATH_SIZE]; // unique repeater hashes heard
+    uint8_t repeat_path_len;  // count of unique repeaters heard
+    uint8_t tx_count;         // number of times this message was transmitted
   };
   #define MSG_LOG_SIZE 16
   MessageLogEntry _msg_log[MSG_LOG_SIZE];
