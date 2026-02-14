@@ -325,6 +325,16 @@ class HomeScreen : public UIScreen {
     if (_ct_sel >= _ct_count && _ct_count > 0) _ct_sel = _ct_count - 1;
   }
 
+  void reselectContact(const char* name) {
+    ContactInfo ci;
+    for (int i = 0; i < _ct_count; i++) {
+      if (the_mesh.getContactByIdx(_ct_sorted[i], ci) && strcmp(ci.name, name) == 0) {
+        _ct_sel = i;
+        return;
+      }
+    }
+  }
+
   void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts) {
     if (_show_voltage) {
       // Show voltage as text in the top-right area
@@ -403,6 +413,12 @@ public:
        _ct_telem_pending(false), _ct_telem_done(false),
        _ct_status_pending(false), _ct_status_done(false),
        sensors_lpp(200) { memset(_ct_cache, 0, sizeof(_ct_cache)); }
+
+  bool isUserBusy() const {
+    return _msg_detail || _ct_action || _ct_path_pending || _ct_telem_pending ||
+           _ct_telem_done || _ct_status_pending || _ct_status_done ||
+           _preset_target_choosing;
+  }
 
   void poll() override {
     if (_shutdown_init && !_task->isButtonPressed()) {  // must wait for USR button to be released
@@ -1488,6 +1504,7 @@ public:
     }
     // Faster refresh when scrolling message text
     if (_page == HomePage::MESSAGES && _msg_scroll_px > 0) {
+      _task->extendAutoOff();
       return 400;
     }
     return 5000;   // next render after 5000 ms
@@ -1518,6 +1535,7 @@ public:
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_status_pending = false;
           _ct_status_done = false;
+          reselectContact(_ct_target_name);
           return true;
         }
         return true;
@@ -1526,6 +1544,7 @@ public:
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_telem_pending = false;
           _ct_telem_done = false;
+          reselectContact(_ct_target_name);
           return true;
         }
         return true;
@@ -1534,6 +1553,7 @@ public:
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_path_pending = false;
           _ct_path_found = false;
+          reselectContact(_ct_target_name);
           return true;
         }
         return true;
@@ -1779,6 +1799,7 @@ public:
                   uint32_t expected_ack = 0;
                   uint32_t est_timeout = 0;
                   the_mesh.sendMessage(ci, ts, 0, entry.text, expected_ack, est_timeout);
+                  the_mesh.registerExpectedAck(expected_ack, NULL);
                   entry.expected_ack = expected_ack;
                   entry.delivered = false;
                   resent = true;
@@ -1804,7 +1825,9 @@ public:
             }
             if (resent) {
               entry.tx_count++;
-              // Append TX count marker to text
+              // Strip old TX marker if present, then append new one
+              char* marker = strstr(entry.text, " (TX:");
+              if (marker) *marker = '\0';
               int tlen = strlen(entry.text);
               snprintf(entry.text + tlen, sizeof(entry.text) - tlen, " (TX: #%d)", entry.tx_count);
               memcpy(entry.packet_hash, the_mesh.getLastSentHash(), MAX_HASH_SIZE);
@@ -1968,6 +1991,7 @@ public:
 #endif
     if (c == KEY_UP && _page == HomePage::RADIO) {
       _show_snr = !_show_snr;
+      if (_show_snr) _show_voltage = false;
       _task->showAlert(_show_snr ? "SNR: ON" : "SNR: OFF", 800);
       return true;
     }
@@ -1984,6 +2008,7 @@ public:
     }
     if ((c == KEY_UP || c == KEY_DOWN) && _page == HomePage::FIRST) {
       _show_voltage = !_show_voltage;
+      if (_show_voltage) _show_snr = false;
       return true;
     }
     return false;
@@ -2247,6 +2272,7 @@ public:
             uint32_t expected_ack = 0;
             uint32_t est_timeout = 0;
             int result = the_mesh.sendMessage(_dm_contact, ts, 0, _compose_buf, expected_ack, est_timeout);
+            the_mesh.registerExpectedAck(expected_ack, NULL);
             // Note: DM sync to companion app not supported - protocol has no outgoing flag
             _task->addToMsgLog("You", _compose_buf, true, 0, -1, _dm_contact.name, NULL, the_mesh.getLastSentHash(), expected_ack);
             _task->notify(UIEventType::ack);
@@ -2646,7 +2672,11 @@ void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, i
   ((MsgPreviewScreen *) msg_preview)->addPreview(path_len, from_name, text);
 
   // Don't interrupt user if they're composing/selecting contacts/channels
+  // or in an interactive sub-state on the home screen
   bool user_busy = (curr == compose || curr == contact_select || curr == channel_select);
+  if (!user_busy && curr == home) {
+    user_busy = ((HomeScreen*)home)->isUserBusy();
+  }
   if (!user_busy) {
     setCurrScreen(msg_preview);
   }
@@ -2727,8 +2757,9 @@ void UITask::sendGPSDM(const ContactInfo& contact) {
     uint32_t expected_ack = 0;
     uint32_t est_timeout = 0;
     int result = the_mesh.sendMessage(contact, ts, 0, gps_text, expected_ack, est_timeout);
+    the_mesh.registerExpectedAck(expected_ack, NULL);
     // Note: DM sync to companion app not supported - protocol has no outgoing flag
-    addToMsgLog("You", gps_text, true, 0, -1, contact.name, NULL, the_mesh.getLastSentHash());
+    addToMsgLog("You", gps_text, true, 0, -1, contact.name, NULL, the_mesh.getLastSentHash(), expected_ack);
     notify(UIEventType::ack);
     showAlert(result > 0 ? "GPS DM Sent!" : "GPS DM failed", 800);
   } else {
@@ -2772,6 +2803,7 @@ void UITask::sendPresetDM(const ContactInfo& contact) {
   uint32_t expected_ack = 0;
   uint32_t est_timeout = 0;
   int result = the_mesh.sendMessage(contact, ts, 0, _pending_preset, expected_ack, est_timeout);
+  the_mesh.registerExpectedAck(expected_ack, NULL);
   addToMsgLog("You", _pending_preset, true, 0, -1, contact.name, NULL, the_mesh.getLastSentHash(), expected_ack);
   notify(UIEventType::ack);
   showAlert(result > 0 ? "DM Sent!" : "DM failed", 800);

@@ -162,6 +162,7 @@ protected:
 public:
   void savePrefs() { _store->savePrefs(_prefs, sensors.node_lat, sensors.node_lon); }
   const uint8_t* getLastSentHash() const { return _last_sent_hash; }
+  void registerExpectedAck(uint32_t ack, ContactInfo* contact);
   void queueSentChannelMessage(int channel_idx, uint32_t timestamp, const char* text, int text_len);
   void queueSentDirectMessage(const ContactInfo& recipient, uint32_t timestamp, const char* text);
 

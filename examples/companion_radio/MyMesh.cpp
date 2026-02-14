@@ -456,6 +456,14 @@ void MyMesh::onContactPathUpdated(const ContactInfo &contact) {
   }
 }
 
+void MyMesh::registerExpectedAck(uint32_t ack, ContactInfo* contact) {
+  if (ack == 0) return;
+  expected_ack_table[next_ack_idx].msg_sent = _ms->getMillis();
+  expected_ack_table[next_ack_idx].ack = ack;
+  expected_ack_table[next_ack_idx].contact = contact;
+  next_ack_idx = (next_ack_idx + 1) % EXPECTED_ACK_TABLE_SIZE;
+}
+
 ContactInfo*  MyMesh::processAck(const uint8_t *data) {
   // see if matches any in a table
   for (int i = 0; i < EXPECTED_ACK_TABLE_SIZE; i++) {
