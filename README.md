@@ -10,16 +10,43 @@ This is a customized version of MeshCore firmware specifically tailored for pers
 
 ## Features Added
 
-- **QWERTY keyboard layout** for text composition
+### Messaging
+- **QWERTY keyboard** with lowercase default, SHIFT toggle, and ESC key
+- **Two-line compose area** with visible prefix and message text
 - **Message history** with scrollable list showing sent/received messages
-- **Message detail view** showing hop count and reply options
-- **Contact selector** for direct messaging (DMs)
+- **Message list prefixes**: sent messages show `(N)` repeat count, incoming multi-hop messages show `<AB>` last-repeater hash
+- **Prefix stays fixed** while message text scrolls horizontally
+- **Message detail view** with timestamp, hop count, signal info, and path display
+- **Reply options**: reply on channel (with @mention), reply via DM, or reply to DM sender
+- **Message resend**: sent messages with no heard repeats show "Resend" option; resending appends TX count and re-tracks repeats
+- **Non-interrupting notifications** — incoming messages don't disrupt compose/typing
+
+### Contacts
+- **Contacts page** with list of all known contacts sorted by most recently heard
+- **Last heard time** displayed for each contact
+- **Contact detail view** with action menu: Send DM, Request Telemetry, Request Status
+- **Cached contact info**: RSSI, SNR, and repeater hop hashes shown in contact list
+- **Telemetry display**: voltage and temperature from remote nodes
+- **Status display**: uptime and battery millivolts from remote nodes
+
+### Radio & Signal
+- **Sent message repeat tracking**: counts how many times your packet was heard retransmitted
+- **Unique repeater accumulation**: "Heard by" shows all unique repeater hashes across all bounces (not just the last path)
+- **Signal info**: RSSI and SNR displayed for received messages and heard repeats
+- **Path display**: full repeater chain shown for incoming multi-hop messages
+
+### Navigation
+- **Navigation page** with compass heading, GPS speed, odometer, and current coordinates
+- **GPS speed** (mph) displayed on home screen
+- **Screen lock** to prevent accidental input during navigation
+
+### Other
 - **Channel selector** for multi-channel messaging
+- **Contact selector** for direct messaging (DMs)
 - **GPS DM** feature to send location coordinates to specific contacts
 - **Runtime preset configuration** via `/presets.txt` file
-- **Two-line compose area** with visible prefix and message text
-- **Keyboard improvements**: lowercase default, SHIFT toggle, ESC key
-- **Non-interrupting notifications** - incoming messages don't disrupt compose/typing
+- **Battery voltage toggle** on home screen
+- **Companion app sync** — channel messages sent from the device sync to the iOS/Android companion app
 - Custom splash screen branding
 
 ## Building
@@ -40,9 +67,9 @@ Flash output located at: `.pio/build/WioTrackerL1_companion_radio_ble/firmware.z
 
 ## Project Structure
 
-- `examples/companion_radio/ui-new/` - Enhanced UI implementation
-- `examples/companion_radio/MyMesh.cpp` - Mesh networking + companion app sync
-- `examples/companion_radio/AbstractUITask.h` - UI interface definition
+- `examples/companion_radio/ui-new/` — Enhanced UI implementation
+- `examples/companion_radio/MyMesh.cpp` — Mesh networking + companion app sync
+- `examples/companion_radio/AbstractUITask.h` — UI interface definition
 
 ## Configuration
 
