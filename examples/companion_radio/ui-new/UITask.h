@@ -112,15 +112,16 @@ public:
   void gotoComposeScreen();
   void gotoContactSelect(bool gps_mode = false);
   void gotoChannelSelect();
-  void startDMCompose(const ContactInfo& contact);
-  void startChannelCompose(int channel_idx, const char* channel_name);
+  void startDMCompose(const ContactInfo& contact, const char* prefill_text = NULL);
+  void startChannelCompose(int channel_idx, const char* channel_name, const char* prefill_text = NULL);
   void sendGPSDM(const ContactInfo& contact);
   void sendPresetToChannel(int channel_idx);
   void sendPresetDM(const ContactInfo& contact);
   void addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len = 0, int channel_idx = -1, const char* contact_name = NULL, const uint8_t* path = NULL, const uint8_t* packet_hash = NULL);
   void matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) override;
   void onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_x4) override;
-  void onTelemetryResponse(const ContactInfo& contact, float voltage) override;
+  void onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature) override;
+  void onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, uint16_t batt_mv) override;
   void showAlert(const char* text, int duration_millis);
   int  getMsgCount() const { return _msgcount; }
   bool hasDisplay() const { return _display != NULL; }

@@ -284,6 +284,12 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
     uint8_t plen = raw[i++];
     if (i + plen > len) return;
     const uint8_t* path = &raw[i];
+    // Track first path byte for display (nearest node hash)
+    if (plen > 0) {
+      _ui->onRxPacket(path[0]);
+    } else if (i + plen < len) {
+      _ui->onRxPacket(raw[i + plen]);  // first payload byte as fallback
+    }
     i += plen;
     int payload_len = len - i;
     if (payload_len <= 0) return;
@@ -417,6 +423,15 @@ int MyMesh::sendPathFind(ContactInfo& contact, uint32_t& est_timeout) {
   contact.out_path_len = -1;
   int result = sendRequest(contact, req_data, sizeof(req_data), tag, est_timeout);
   contact.out_path_len = save;
+  return result;
+}
+
+int MyMesh::sendStatusReq(const ContactInfo& contact, uint32_t& est_timeout) {
+  uint32_t tag;
+  int result = sendRequest(contact, REQ_TYPE_GET_STATUS, tag, est_timeout);
+  if (result != MSG_SEND_FAILED) {
+    memcpy(&ui_pending_status, contact.id.pub_key, 4);  // match by pub_key prefix (same as legacy)
+  }
   return result;
 }
 
@@ -786,16 +801,15 @@ void MyMesh::onContactResponse(const ContactInfo &contact, const uint8_t *data, 
   // Check for UI-initiated telemetry response
   if (_ui && len > 4 && ui_pending_telemetry && tag == ui_pending_telemetry) {
     ui_pending_telemetry = 0;
-    // Parse LPP telemetry to extract voltage
-    float voltage = 0;
+    // Parse LPP telemetry to extract voltage and temperature
+    float voltage = 0, temperature = -274;  // -274 = not available
     LPPReader reader(&data[4], len - 4);
     uint8_t channel, type;
     while (reader.readHeader(channel, type)) {
       if (type == LPP_VOLTAGE) {
         reader.readVoltage(voltage);
-        break;
       } else if (type == LPP_TEMPERATURE) {
-        float t; reader.readTemperature(t);
+        reader.readTemperature(temperature);
       } else if (type == LPP_RELATIVE_HUMIDITY) {
         float h; reader.readRelativeHumidity(h);
       } else if (type == LPP_BAROMETRIC_PRESSURE) {
@@ -806,7 +820,20 @@ void MyMesh::onContactResponse(const ContactInfo &contact, const uint8_t *data, 
         break;  // unknown type, stop parsing
       }
     }
-    _ui->onTelemetryResponse(contact, voltage);
+    _ui->onTelemetryResponse(contact, voltage, temperature);
+  }
+
+  // Check for UI-initiated status response
+  if (_ui && len > 4 + 20 && ui_pending_status &&
+      memcmp(&ui_pending_status, contact.id.pub_key, 4) == 0) {
+    ui_pending_status = 0;
+    // Parse RepeaterStats: batt_mv at offset 0, uptime at offset 20 (relative to data+4)
+    const uint8_t* stats = &data[4];
+    uint16_t batt_mv;
+    uint32_t uptime_secs;
+    memcpy(&batt_mv, &stats[0], 2);
+    memcpy(&uptime_secs, &stats[20], 4);
+    _ui->onStatusResponse(contact, uptime_secs, batt_mv);
   }
 }
 

@@ -194,6 +194,8 @@ class HomeScreen : public UIScreen {
   int _msg_scroll_px;       // horizontal pixel offset for selected message
   bool _msg_detail;         // true = showing message detail/reply view
   uint8_t _msg_detail_scroll; // scroll offset within detail items
+  bool _msg_reply_menu;     // true = showing reply type selection (channel msgs only)
+  uint8_t _msg_reply_sel;   // 0 = Reply Ch, 1 = Reply DM
   bool _shutdown_init;
   bool _show_voltage;
   bool _show_speed;
@@ -217,6 +219,11 @@ class HomeScreen : public UIScreen {
     // Telemetry info
     bool has_telem;
     float voltage;
+    float temperature;  // -274 = not available
+    // Status info (repeaters)
+    bool has_status;
+    uint32_t uptime_secs;
+    uint16_t batt_mv;
   };
   #define CT_CACHE_SIZE 16
   ContactCache _ct_cache[CT_CACHE_SIZE];
@@ -230,18 +237,16 @@ class HomeScreen : public UIScreen {
     // Find empty slot
     for (int i = 0; i < CT_CACHE_SIZE; i++) {
       if (!_ct_cache[i].valid) {
+        memset(&_ct_cache[i], 0, sizeof(ContactCache));
         memcpy(_ct_cache[i].pub_key_prefix, pub_key, 4);
         _ct_cache[i].valid = true;
-        _ct_cache[i].has_path_info = false;
-        _ct_cache[i].has_telem = false;
         return &_ct_cache[i];
       }
     }
     // Overwrite oldest (slot 0)
+    memset(&_ct_cache[0], 0, sizeof(ContactCache));
     memcpy(_ct_cache[0].pub_key_prefix, pub_key, 4);
     _ct_cache[0].valid = true;
-    _ct_cache[0].has_path_info = false;
-    _ct_cache[0].has_telem = false;
     return &_ct_cache[0];
   }
 
@@ -271,6 +276,10 @@ class HomeScreen : public UIScreen {
   bool _ct_telem_pending;
   unsigned long _ct_telem_timeout;
   bool _ct_telem_done;
+  // Status sub-state
+  bool _ct_status_pending;
+  unsigned long _ct_status_timeout;
+  bool _ct_status_done;
 
   void rebuildContactsSorted() {
     _ct_count = 0;
@@ -362,12 +371,13 @@ public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, SensorManager* sensors, NodePrefs* node_prefs)
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
        _preset_sel(0), _msg_sel(0), _msg_sel_prev(0xFF), _msg_scroll_px(0),
-       _msg_detail(false), _msg_detail_scroll(0), _shutdown_init(false), _show_voltage(false), _show_speed(false),
+       _msg_detail(false), _msg_detail_scroll(0), _msg_reply_menu(false), _msg_reply_sel(0), _shutdown_init(false), _show_voltage(false), _show_speed(false),
        _show_snr(false), _max_speed(0), _odometer(0), _odo_last(0), _nav_screen_lock(false),
        _preset_target_choosing(false), _preset_target_sel(0),
        _ct_sel(0), _ct_count(0), _ct_action(false), _ct_action_sel(0), _ct_action_count(0), _ct_detail_scroll(0),
        _ct_path_pending(false), _ct_path_found(false),
        _ct_telem_pending(false), _ct_telem_done(false),
+       _ct_status_pending(false), _ct_status_done(false),
        sensors_lpp(200) { memset(_ct_cache, 0, sizeof(_ct_cache)); }
 
   void poll() override {
@@ -393,8 +403,8 @@ public:
 
     // SNR/RSSI display OR speed HUD in the top bar (SNR takes priority over speed)
     if (_show_snr) {
-      char snr_buf[16];
-      snprintf(snr_buf, sizeof(snr_buf), "%.0f/%.1f", radio_driver.getLastRSSI(), radio_driver.getLastSNR());
+      char snr_buf[20];
+      snprintf(snr_buf, sizeof(snr_buf), "%02X %.0f/%.1f", _task->_last_rx_id, radio_driver.getLastRSSI(), radio_driver.getLastSNR());
       display.setColor(DisplayDriver::GREEN);
       display.setTextSize(1);
       int snrX = display.width() - (int)strlen(snr_buf) * 6 - 2;
@@ -522,11 +532,48 @@ public:
         int buf_idx = (_task->_msg_log_next - 1 - _msg_sel + MSG_LOG_SIZE) % MSG_LOG_SIZE;
         auto& entry = _task->_msg_log[buf_idx];
 
-        // Build detail items: Time, From, To, Hops, Repeats, Signal, Path, Reply hint
-        char detail_items[10][48];
+        // Build detail items: Message text lines, separator, then metadata
+        char detail_items[20][48];
         uint8_t detail_count = 0;
 
-        // Item 0: Timestamp
+        // Full message text, word-wrapped
+        {
+          int chars_per_line = display.width() / 6;  // ~21 for 128px display
+          if (chars_per_line > 46) chars_per_line = 46;
+          if (chars_per_line < 10) chars_per_line = 10;
+          // Filter the text for display (replace multi-byte UTF-8 with blocks)
+          char filtered_text[82];
+          display.translateUTF8ToBlocks(filtered_text, entry.text, sizeof(filtered_text));
+          const char* src = filtered_text;
+          int src_len = strlen(src);
+          int pos = 0;
+          while (pos < src_len && detail_count < 8) {  // max 8 lines for message
+            // Find how much fits on this line
+            int line_end = pos + chars_per_line;
+            if (line_end >= src_len) {
+              line_end = src_len;
+            } else {
+              // Try to break at a space
+              int brk = line_end;
+              while (brk > pos && src[brk] != ' ') brk--;
+              if (brk > pos) line_end = brk;
+            }
+            int len = line_end - pos;
+            memcpy(detail_items[detail_count], &src[pos], len);
+            detail_items[detail_count][len] = '\0';
+            detail_count++;
+            pos = line_end;
+            // Skip the space at the break point
+            if (pos < src_len && src[pos] == ' ') pos++;
+          }
+        }
+
+        // Separator
+        uint8_t separator_idx = detail_count;
+        strcpy(detail_items[detail_count], "---");
+        detail_count++;
+
+        // Timestamp
         if (entry.timestamp > 1577836800) { // after 2020-01-01
           uint32_t t = entry.timestamp;
           int mins = (t / 60) % 60;
@@ -645,18 +692,30 @@ public:
           detail_count++;
         }
 
-        // Item 4: Reply hint
-        if (entry.channel_idx >= 0) {
-          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Enter=Reply Ch");
+        // Reply options
+        uint8_t reply_start_idx = detail_count;
+        if (entry.channel_idx >= 0 && !entry.is_sent && _msg_reply_menu) {
+          // Showing reply type selection for channel message
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]),
+                   "%sReply @Ch", _msg_reply_sel == 0 ? "> " : "  ");
+          detail_count++;
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]),
+                   "%sReply DM", _msg_reply_sel == 1 ? "> " : "  ");
+          detail_count++;
+        } else if (entry.channel_idx >= 0 && !entry.is_sent) {
+          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Enter=Reply");
+          detail_count++;
         } else if (entry.contact_name[0] != '\0' && !entry.is_sent) {
           snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Enter=Reply DM");
+          detail_count++;
         } else {
           snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Cancel=Back");
+          detail_count++;
         }
-        detail_count++;
 
-        // Clamp scroll
-        if (_msg_detail_scroll > detail_count - 1) _msg_detail_scroll = detail_count - 1;
+        // Clamp scroll (ensure last 3 items visible at most)
+        int max_scroll = detail_count > 3 ? detail_count - 3 : 0;
+        if (_msg_detail_scroll > max_scroll) _msg_detail_scroll = max_scroll;
 
         // Header
         display.setColor(DisplayDriver::YELLOW);
@@ -666,12 +725,14 @@ public:
         int visible = 3;
         int y = 30;
         for (int i = _msg_detail_scroll; i < _msg_detail_scroll + visible && i < detail_count; i++, y += 12) {
-          // Color: first item (From) uses sent/recv color, last item (reply) green, rest light
-          if (i == 0) {
+          if (i < separator_idx) {
+            // Message text: sent=yellow, received=green
             display.setColor(entry.is_sent ? DisplayDriver::YELLOW : DisplayDriver::GREEN);
-          } else if (i == detail_count - 1) {
+          } else if (i >= reply_start_idx) {
+            // Reply hints/options: green
             display.setColor(DisplayDriver::GREEN);
           } else {
+            // Metadata lines + separator
             display.setColor(DisplayDriver::LIGHT);
           }
           display.drawTextEllipsized(0, y, display.width(), detail_items[i]);
@@ -819,7 +880,38 @@ public:
       }
     } else if (_page == HomePage::TRACE) {
       display.setTextSize(1);
-      if (_ct_telem_pending || _ct_telem_done) {
+      if (_ct_status_pending || _ct_status_done) {
+        display.setColor(DisplayDriver::YELLOW);
+        snprintf(tmp, sizeof(tmp), "Status: %s", _ct_target_name);
+        display.drawTextEllipsized(0, 24, display.width(), tmp);
+        if (_ct_status_done) {
+          ContactCache* cc = findCache(_ct_path_key);
+          display.setColor(DisplayDriver::LIGHT);
+          if (cc && cc->has_status) {
+            uint32_t up = cc->uptime_secs;
+            uint32_t d = up / 86400; uint32_t h = (up % 86400) / 3600; uint32_t m = (up % 3600) / 60;
+            if (d > 0)
+              snprintf(tmp, sizeof(tmp), "Up: %lud %luh %lum", d, h, m);
+            else
+              snprintf(tmp, sizeof(tmp), "Up: %luh %lum", h, m);
+            display.setCursor(0, 36);
+            display.print(tmp);
+            snprintf(tmp, sizeof(tmp), "Power: %umV", cc->batt_mv);
+            display.setCursor(0, 48);
+            display.print(tmp);
+          } else {
+            display.setCursor(0, 40);
+            display.print("No data");
+          }
+        } else {
+          display.setColor(DisplayDriver::LIGHT);
+          display.drawTextCentered(display.width() / 2, 40, "Waiting...");
+          if (millis() > _ct_status_timeout) {
+            _ct_status_pending = false;
+            _task->showAlert("Status timeout", 1200);
+          }
+        }
+      } else if (_ct_telem_pending || _ct_telem_done) {
         display.setColor(DisplayDriver::YELLOW);
         snprintf(tmp, sizeof(tmp), "Telemetry: %s", _ct_target_name);
         display.drawTextEllipsized(0, 24, display.width(), tmp);
@@ -827,12 +919,19 @@ public:
           ContactCache* cc = findCache(_ct_path_key);
           display.setColor(DisplayDriver::LIGHT);
           if (cc && cc->has_telem) {
-            snprintf(tmp, sizeof(tmp), "Battery: %.2fV", cc->voltage);
+            snprintf(tmp, sizeof(tmp), "Batt: %.2fV", cc->voltage);
+            display.setCursor(0, 36);
+            display.print(tmp);
+            if (cc->temperature > -274) {
+              snprintf(tmp, sizeof(tmp), "Temp: %.1fC", cc->temperature);
+              display.setCursor(0, 48);
+              display.print(tmp);
+            }
           } else {
             snprintf(tmp, sizeof(tmp), "No data");
+            display.setCursor(0, 40);
+            display.print(tmp);
           }
-          display.setCursor(0, 40);
-          display.print(tmp);
         } else {
           display.setColor(DisplayDriver::LIGHT);
           display.drawTextCentered(display.width() / 2, 40, "Waiting...");
@@ -851,26 +950,29 @@ public:
           if (cc && cc->has_path_info) {
             if (cc->path_hops > 0) {
               snprintf(tmp, sizeof(tmp), "Found! %d hops", cc->path_hops);
+              display.setColor(DisplayDriver::YELLOW);
+              display.setCursor(0, 36);
+              display.print(tmp);
+              // Hop hex chain
               char hops[48] = "";
               int pos = 0;
               for (int h = 0; h < cc->path_hops && pos < 44; h++) {
                 pos += snprintf(hops + pos, sizeof(hops) - pos, "%s%02X", h > 0 ? " " : "", cc->path[h]);
               }
               display.setColor(DisplayDriver::LIGHT);
-              display.drawTextEllipsized(0, 52, display.width(), hops);
+              display.drawTextEllipsized(0, 48, display.width(), hops);
             } else {
-              snprintf(tmp, sizeof(tmp), "Found! Direct");
+              display.setColor(DisplayDriver::YELLOW);
+              display.setCursor(0, 36);
+              display.print("Found! Direct");
             }
             float snr_f = (float)cc->snr_x4 / 4.0f;
-            char sig[32];
-            snprintf(sig, sizeof(sig), "RSSI:%d SNR:%.1f", cc->rssi, snr_f);
+            snprintf(tmp, sizeof(tmp), "RSSI:%d SNR:%.1f", cc->rssi, snr_f);
             display.setColor(DisplayDriver::LIGHT);
-            display.drawTextEllipsized(0, 40, display.width() / 2, tmp);
-            display.drawTextEllipsized(display.width() / 2, 40, display.width() / 2, sig);
+            display.drawTextEllipsized(0, 58, display.width(), tmp);
           } else {
-            snprintf(tmp, sizeof(tmp), "Path updated!");
             display.setColor(DisplayDriver::YELLOW);
-            display.drawTextCentered(display.width() / 2, 40, tmp);
+            display.drawTextCentered(display.width() / 2, 40, "Path updated!");
           }
         } else {
           display.setColor(DisplayDriver::LIGHT);
@@ -888,8 +990,8 @@ public:
           display.drawTextEllipsized(0, 18, display.width(), ci.name);
 
           // Build combined list: actions first, then cached info lines
-          const char* items[10];
-          bool item_is_action[10];
+          const char* items[12];
+          bool item_is_action[12];
           int item_count = 0;
 
           // Actions
@@ -903,11 +1005,12 @@ public:
           } else {
             items[item_count] = "Find Path"; item_is_action[item_count++] = true;
             items[item_count] = "Telemetry"; item_is_action[item_count++] = true;
+            items[item_count] = "Status"; item_is_action[item_count++] = true;
           }
           _ct_action_count = item_count;  // number of selectable actions
 
           // Cached info lines (not selectable)
-          static char info_lines[4][40];
+          static char info_lines[5][40];
           ContactCache* cc = findCache(ci.id.pub_key);
           if (cc && cc->has_path_info) {
             if (cc->path_hops > 0) {
@@ -926,8 +1029,23 @@ public:
             items[item_count] = info_lines[1]; item_is_action[item_count++] = false;
           }
           if (cc && cc->has_telem) {
-            snprintf(info_lines[2], sizeof(info_lines[2]), "Batt: %.2fV", cc->voltage);
+            if (cc->temperature > -274) {
+              snprintf(info_lines[2], sizeof(info_lines[2]), "%.2fV  %.1fC", cc->voltage, cc->temperature);
+            } else {
+              snprintf(info_lines[2], sizeof(info_lines[2]), "Batt: %.2fV", cc->voltage);
+            }
             items[item_count] = info_lines[2]; item_is_action[item_count++] = false;
+          }
+          if (cc && cc->has_status) {
+            uint32_t up = cc->uptime_secs;
+            uint32_t d = up / 86400; uint32_t h = (up % 86400) / 3600; uint32_t m = (up % 3600) / 60;
+            if (d > 0)
+              snprintf(info_lines[3], sizeof(info_lines[3]), "Up: %lud %luh %lum", d, h, m);
+            else
+              snprintf(info_lines[3], sizeof(info_lines[3]), "Up: %luh %lum", h, m);
+            items[item_count] = info_lines[3]; item_is_action[item_count++] = false;
+            snprintf(info_lines[4], sizeof(info_lines[4]), "RPwr: %umV", cc->batt_mv);
+            items[item_count] = info_lines[4]; item_is_action[item_count++] = false;
           }
 
           if (_ct_action_sel >= _ct_action_count && _ct_action_count > 0)
@@ -1326,6 +1444,14 @@ public:
       return true;
     }
     if (_page == HomePage::TRACE) {
+      if (_ct_status_pending || _ct_status_done) {
+        if (c == KEY_CANCEL || c == KEY_ENTER) {
+          _ct_status_pending = false;
+          _ct_status_done = false;
+          return true;
+        }
+        return true;
+      }
       if (_ct_telem_pending || _ct_telem_done) {
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_telem_pending = false;
@@ -1370,6 +1496,7 @@ public:
               int total = _ct_action_count;
               if (cc && cc->has_path_info) total += 2;
               if (cc && cc->has_telem) total += 1;
+              if (cc && cc->has_status) total += 2;
               if (_ct_detail_scroll + 3 < total) _ct_detail_scroll++;
             }
           }
@@ -1379,7 +1506,7 @@ public:
           ContactInfo ci;
           if (the_mesh.getContactByIdx(_ct_sorted[_ct_sel], ci)) {
             // Determine which action was selected
-            const char* actions[4];
+            const char* actions[5];
             uint8_t act_count = 0;
             if (ci.type == ADV_TYPE_CHAT) {
               actions[act_count++] = "Send DM";
@@ -1391,6 +1518,7 @@ public:
             } else if (ci.type == ADV_TYPE_REPEATER) {
               actions[act_count++] = "Find Path";
               actions[act_count++] = "Telemetry";
+              actions[act_count++] = "Status";
             } else {
               actions[act_count++] = "Find Path";
               actions[act_count++] = "Telemetry";
@@ -1421,6 +1549,20 @@ public:
                 _ct_telem_pending = true;
                 _ct_telem_done = false;
                 _ct_telem_timeout = millis() + est_timeout + 2000;
+                strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
+                _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
+                memcpy(_ct_path_key, ci.id.pub_key, PUB_KEY_SIZE);
+              } else {
+                _task->showAlert("Send failed", 800);
+              }
+            } else if (strcmp(chosen, "Status") == 0) {
+              uint32_t est_timeout;
+              int result = the_mesh.sendStatusReq(ci, est_timeout);
+              if (result != MSG_SEND_FAILED) {
+                _ct_action = false;
+                _ct_status_pending = true;
+                _ct_status_done = false;
+                _ct_status_timeout = millis() + est_timeout + 2000;
                 strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
                 _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
                 memcpy(_ct_path_key, ci.id.pub_key, PUB_KEY_SIZE);
@@ -1462,32 +1604,87 @@ public:
       if (_msg_detail) {
         // In detail view
         if (c == KEY_CANCEL || c == KEY_LEFT) {
-          _msg_detail = false;
-          _msg_detail_scroll = 0;
+          if (_msg_reply_menu) {
+            _msg_reply_menu = false;
+          } else {
+            _msg_detail = false;
+            _msg_detail_scroll = 0;
+          }
           return true;
         }
-        if (c == KEY_UP) {
-          if (_msg_detail_scroll > 0) _msg_detail_scroll--;
-          return true;
-        }
-        if (c == KEY_DOWN) {
-          _msg_detail_scroll++;  // clamped during render
-          return true;
+        if (_msg_reply_menu) {
+          if (c == KEY_UP || c == KEY_DOWN) {
+            _msg_reply_sel = 1 - _msg_reply_sel;
+            return true;
+          }
+        } else {
+          if (c == KEY_UP) {
+            if (_msg_detail_scroll > 0) _msg_detail_scroll--;
+            return true;
+          }
+          if (c == KEY_DOWN) {
+            _msg_detail_scroll++;  // clamped during render
+            return true;
+          }
         }
         if (c == KEY_ENTER && total > 0) {
           int buf_idx = (_task->_msg_log_next - 1 - _msg_sel + MSG_LOG_SIZE) % MSG_LOG_SIZE;
           auto& entry = _task->_msg_log[buf_idx];
-          _msg_detail = false;
-          // Reply: channel message -> compose on same channel
-          if (entry.channel_idx >= 0) {
-            ChannelDetails cd;
-            if (the_mesh.getChannel(entry.channel_idx, cd)) {
-              _task->startChannelCompose(entry.channel_idx, cd.name);
+
+          // Channel message reply: show reply type menu first
+          if (entry.channel_idx >= 0 && !entry.is_sent) {
+            if (!_msg_reply_menu) {
+              // First press: show the reply type menu
+              _msg_reply_menu = true;
+              _msg_reply_sel = 0;
+              _msg_detail_scroll = 255; // will be clamped during render to show bottom
+              return true;
+            }
+            // Second press: execute selected reply
+            _msg_detail = false;
+            _msg_reply_menu = false;
+            if (_msg_reply_sel == 0) {
+              // Reply on channel with @sender
+              ChannelDetails cd;
+              if (the_mesh.getChannel(entry.channel_idx, cd)) {
+                // Extract sender name from "sender: text" format for @mention
+                const char* colon = strstr(entry.text, ": ");
+                char mention[28] = "";
+                if (colon && colon - entry.text < 24) {
+                  int nlen = colon - entry.text;
+                  mention[0] = '@';
+                  memcpy(&mention[1], entry.text, nlen);
+                  mention[1 + nlen] = ' ';
+                  mention[2 + nlen] = '\0';
+                }
+                _task->startChannelCompose(entry.channel_idx, cd.name, mention[0] ? mention : NULL);
+              }
+            } else {
+              // DM the sender directly
+              const char* colon = strstr(entry.text, ": ");
+              if (colon && colon - entry.text < 24) {
+                char sender_name[24];
+                int nlen = colon - entry.text;
+                memcpy(sender_name, entry.text, nlen);
+                sender_name[nlen] = '\0';
+                ContactInfo ci;
+                int n = the_mesh.getNumContacts();
+                for (int i = 0; i < n; i++) {
+                  if (the_mesh.getContactByIdx(i, ci) && strcmp(ci.name, sender_name) == 0) {
+                    _task->startDMCompose(ci);
+                    return true;
+                  }
+                }
+                _task->showAlert("Contact not found", 800);
+              } else {
+                _task->showAlert("Unknown sender", 800);
+              }
             }
             return true;
           }
-          // Reply: DM -> compose DM to sender
+          // DM reply: compose DM to sender (no @mention needed)
           if (entry.contact_name[0] != '\0' && !entry.is_sent) {
+            _msg_detail = false;
             ContactInfo ci;
             int n = the_mesh.getNumContacts();
             for (int i = 0; i < n; i++) {
@@ -1808,6 +2005,15 @@ public:
     _channel_idx = idx;
     strncpy(_channel_name, name, sizeof(_channel_name) - 1);
     _channel_name[sizeof(_channel_name) - 1] = '\0';
+  }
+
+  // Pre-fill compose buffer with text (e.g., "@username ")
+  void prefill(const char* text) {
+    int len = strlen(text);
+    if (len >= MAX_TEXT_LEN) len = MAX_TEXT_LEN - 1;
+    memcpy(_compose_buf, text, len);
+    _compose_buf[len] = '\0';
+    _compose_len = len;
   }
 
   int render(DisplayDriver& display) override {
@@ -2378,15 +2584,17 @@ void UITask::gotoChannelSelect() {
   setCurrScreen(channel_select);
 }
 
-void UITask::startDMCompose(const ContactInfo& contact) {
+void UITask::startDMCompose(const ContactInfo& contact, const char* prefill_text) {
   ((ComposeScreen*)compose)->reset();
   ((ComposeScreen*)compose)->setDMTarget(contact);
+  if (prefill_text) ((ComposeScreen*)compose)->prefill(prefill_text);
   setCurrScreen(compose);
 }
 
-void UITask::startChannelCompose(int channel_idx, const char* channel_name) {
+void UITask::startChannelCompose(int channel_idx, const char* channel_name, const char* prefill_text) {
   ((ComposeScreen*)compose)->reset();
   ((ComposeScreen*)compose)->setChannel(channel_idx, channel_name);
+  if (prefill_text) ((ComposeScreen*)compose)->prefill(prefill_text);
   setCurrScreen(compose);
 }
 
@@ -2540,7 +2748,7 @@ void UITask::onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_
   hs->_ct_path_found = true;
 }
 
-void UITask::onTelemetryResponse(const ContactInfo& contact, float voltage) {
+void UITask::onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature) {
   if (!home) return;
   HomeScreen* hs = (HomeScreen*)home;
 
@@ -2548,10 +2756,26 @@ void UITask::onTelemetryResponse(const ContactInfo& contact, float voltage) {
   HomeScreen::ContactCache* cc = hs->findOrCreateCache(contact.id.pub_key);
   cc->has_telem = true;
   cc->voltage = voltage;
+  cc->temperature = temperature;
 
   if (!hs->_ct_telem_pending) return;
   hs->_ct_telem_done = true;
   hs->_ct_telem_pending = false;
+}
+
+void UITask::onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, uint16_t batt_mv) {
+  if (!home) return;
+  HomeScreen* hs = (HomeScreen*)home;
+
+  // Cache status for this contact
+  HomeScreen::ContactCache* cc = hs->findOrCreateCache(contact.id.pub_key);
+  cc->has_status = true;
+  cc->uptime_secs = uptime_secs;
+  cc->batt_mv = batt_mv;
+
+  if (!hs->_ct_status_pending) return;
+  hs->_ct_status_done = true;
+  hs->_ct_status_pending = false;
 }
 
 /*
