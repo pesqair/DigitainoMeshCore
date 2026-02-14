@@ -14,11 +14,12 @@ This is a customized version of MeshCore firmware specifically tailored for pers
 - **QWERTY keyboard** with lowercase default, SHIFT toggle, and ESC key
 - **Two-line compose area** with visible prefix and message text
 - **Message history** with scrollable list showing sent/received messages
-- **Message list prefixes**: sent messages show `(N)` repeat count, incoming multi-hop messages show `<AB>` last-repeater hash
+- **Message list prefixes**: sent DMs show `(D)` when delivered, sent messages show `(N)` repeat count, incoming multi-hop messages show `<AB>` last-repeater hash
 - **Prefix stays fixed** while message text scrolls horizontally
 - **Message detail view** with timestamp, hop count, signal info, and path display
 - **Reply options**: reply on channel (with @mention), reply via DM, or reply to DM sender
-- **Message resend**: sent messages with no heard repeats show "Resend" option; resending appends TX count and re-tracks repeats
+- **DM delivery receipts**: sent DMs show "Delivered" or "Pending..." in detail view when ACK tracking is active
+- **Message resend**: sent messages with no heard repeats (and undelivered DMs) show "Resend" option; resending updates TX count and re-tracks repeats
 - **Non-interrupting notifications** — incoming messages don't disrupt compose/typing
 
 ### Contacts
@@ -91,7 +92,7 @@ This firmware is compatible with the official MeshCore companion apps (iOS/Andro
 
 **App → Device UI:**
 - Channel messages sent from the app appear in the device's message log (with repeat tracking)
-- DMs sent from the app appear in the device's message log
+- DMs sent from the app appear in the device's message log (retries collapse into a single entry with updated TX count)
 - All received messages (channel and DM) appear on both simultaneously
 
 **Device UI → App:**

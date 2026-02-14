@@ -467,6 +467,7 @@ ContactInfo*  MyMesh::processAck(const uint8_t *data) {
       _serial->writeFrame(out_frame, 9);
 
       // NOTE: the same ACK can be received multiple times!
+      if (_ui) _ui->onAckReceived(expected_ack_table[i].ack);
       expected_ack_table[i].ack = 0; // clear expected hash, now that we have received ACK
       return expected_ack_table[i].contact;
     }
@@ -1165,7 +1166,13 @@ void MyMesh::handleCmdFrame(size_t len) {
         memcpy(&out_frame[2], &expected_ack, 4);
         memcpy(&out_frame[6], &est_timeout, 4);
         _serial->writeFrame(out_frame, 10);
-        if (_ui) _ui->addToMsgLog("You", text, true, 0, -1, recipient->name, NULL, _last_sent_hash);
+        if (_ui) {
+          if (attempt > 0) {
+            _ui->updateMsgLogRetry(text, recipient->name, _last_sent_hash, expected_ack);
+          } else {
+            _ui->addToMsgLog("You", text, true, 0, -1, recipient->name, NULL, _last_sent_hash, expected_ack);
+          }
+        }
       }
     } else {
       writeErrFrame(recipient == NULL

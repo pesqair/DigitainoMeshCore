@@ -99,6 +99,8 @@ public:
     uint8_t repeat_path[MAX_PATH_SIZE]; // unique repeater hashes heard
     uint8_t repeat_path_len;  // count of unique repeaters heard
     uint8_t tx_count;         // number of times this message was transmitted
+    uint32_t expected_ack;    // ACK hash for delivery tracking (DMs only)
+    bool delivered;           // true when delivery ACK received
   };
   #define MSG_LOG_SIZE 16
   MessageLogEntry _msg_log[MSG_LOG_SIZE];
@@ -118,7 +120,9 @@ public:
   void sendGPSDM(const ContactInfo& contact);
   void sendPresetToChannel(int channel_idx);
   void sendPresetDM(const ContactInfo& contact);
-  void addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len = 0, int channel_idx = -1, const char* contact_name = NULL, const uint8_t* path = NULL, const uint8_t* packet_hash = NULL);
+  void addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len = 0, int channel_idx = -1, const char* contact_name = NULL, const uint8_t* path = NULL, const uint8_t* packet_hash = NULL, uint32_t expected_ack = 0);
+  void updateMsgLogRetry(const char* text, const char* contact_name, const uint8_t* packet_hash, uint32_t expected_ack) override;
+  void onAckReceived(uint32_t ack_hash) override;
   void matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) override;
   void onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_x4) override;
   void onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature) override;

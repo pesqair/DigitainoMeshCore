@@ -695,6 +695,16 @@ public:
           }
         }
 
+        // Sent DM: Delivery status
+        if (entry.is_sent && entry.channel_idx < 0 && entry.contact_name[0] != '\0') {
+          if (entry.delivered) {
+            snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Delivered");
+          } else if (entry.expected_ack != 0) {
+            snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Pending...");
+          }
+          if (entry.delivered || entry.expected_ack != 0) detail_count++;
+        }
+
         // Received messages: Signal (RSSI/SNR)
         if (!entry.is_sent && entry.rssi != 0) {
           float snr = (float)entry.snr_x4 / 4.0f;
@@ -732,7 +742,7 @@ public:
         } else if (entry.contact_name[0] != '\0' && !entry.is_sent) {
           snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Enter=Reply DM");
           detail_count++;
-        } else if (entry.is_sent && entry.heard_repeats == 0) {
+        } else if (entry.is_sent && entry.heard_repeats == 0 && !entry.delivered) {
           snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Enter=Resend");
           detail_count++;
         } else {
@@ -800,7 +810,9 @@ public:
             // Build prefix (fixed) and body (scrollable) separately
             char prefix[8] = "";
             char line[80];
-            if (entry.is_sent && entry.heard_repeats > 0) {
+            if (entry.is_sent && entry.channel_idx < 0 && entry.delivered) {
+              snprintf(prefix, sizeof(prefix), "(D) ");
+            } else if (entry.is_sent && entry.heard_repeats > 0) {
               snprintf(prefix, sizeof(prefix), "(%d) ", entry.heard_repeats);
             } else if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF) {
               snprintf(prefix, sizeof(prefix), "<%02X> ", entry.path[entry.path_len - 1]);
@@ -1754,8 +1766,8 @@ public:
             _task->showAlert("Contact not found", 800);
             return true;
           }
-          // Resend: sent message with no heard repeats
-          if (entry.is_sent && entry.heard_repeats == 0) {
+          // Resend: sent message with no heard repeats and not delivered
+          if (entry.is_sent && entry.heard_repeats == 0 && !entry.delivered) {
             bool resent = false;
             if (entry.channel_idx < 0 && entry.contact_name[0] != '\0') {
               // DM resend
@@ -1767,6 +1779,8 @@ public:
                   uint32_t expected_ack = 0;
                   uint32_t est_timeout = 0;
                   the_mesh.sendMessage(ci, ts, 0, entry.text, expected_ack, est_timeout);
+                  entry.expected_ack = expected_ack;
+                  entry.delivered = false;
                   resent = true;
                   break;
                 }
@@ -2234,7 +2248,7 @@ public:
             uint32_t est_timeout = 0;
             int result = the_mesh.sendMessage(_dm_contact, ts, 0, _compose_buf, expected_ack, est_timeout);
             // Note: DM sync to companion app not supported - protocol has no outgoing flag
-            _task->addToMsgLog("You", _compose_buf, true, 0, -1, _dm_contact.name, NULL, the_mesh.getLastSentHash());
+            _task->addToMsgLog("You", _compose_buf, true, 0, -1, _dm_contact.name, NULL, the_mesh.getLastSentHash(), expected_ack);
             _task->notify(UIEventType::ack);
             _task->showAlert(result > 0 ? "DM Sent!" : "DM failed", 800);
           } else {
@@ -2758,14 +2772,14 @@ void UITask::sendPresetDM(const ContactInfo& contact) {
   uint32_t expected_ack = 0;
   uint32_t est_timeout = 0;
   int result = the_mesh.sendMessage(contact, ts, 0, _pending_preset, expected_ack, est_timeout);
-  addToMsgLog("You", _pending_preset, true, 0, -1, contact.name, NULL, the_mesh.getLastSentHash());
+  addToMsgLog("You", _pending_preset, true, 0, -1, contact.name, NULL, the_mesh.getLastSentHash(), expected_ack);
   notify(UIEventType::ack);
   showAlert(result > 0 ? "DM Sent!" : "DM failed", 800);
   _preset_pending = false;
   gotoHomeScreen();
 }
 
-void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len, int channel_idx, const char* contact_name, const uint8_t* path, const uint8_t* packet_hash) {
+void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len, int channel_idx, const char* contact_name, const uint8_t* path, const uint8_t* packet_hash, uint32_t expected_ack) {
   auto& entry = _msg_log[_msg_log_next];
   entry.timestamp = the_mesh.getRTCClock()->getCurrentTime();
   strncpy(entry.origin, origin, sizeof(entry.origin) - 1);
@@ -2805,9 +2819,46 @@ void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uin
   entry.repeat_path_len = 0;
   memset(entry.repeat_path, 0, sizeof(entry.repeat_path));
   entry.tx_count = 1;
+  entry.expected_ack = expected_ack;
+  entry.delivered = false;
 
   _msg_log_next = (_msg_log_next + 1) % MSG_LOG_SIZE;
   if (_msg_log_count < MSG_LOG_SIZE) _msg_log_count++;
+}
+
+void UITask::updateMsgLogRetry(const char* text, const char* contact_name, const uint8_t* packet_hash, uint32_t expected_ack) {
+  for (int i = 0; i < _msg_log_count; i++) {
+    int idx = (_msg_log_next - 1 - i + MSG_LOG_SIZE) % MSG_LOG_SIZE;
+    auto& entry = _msg_log[idx];
+    if (!entry.is_sent) continue;
+    if (entry.channel_idx >= 0) continue; // skip channel messages
+    if (contact_name && strcmp(entry.contact_name, contact_name) != 0) continue;
+    if (strcmp(entry.text, text) != 0) continue;
+    // Found matching entry — update for retry
+    if (packet_hash) memcpy(entry.packet_hash, packet_hash, MAX_HASH_SIZE);
+    entry.expected_ack = expected_ack;
+    entry.tx_count++;
+    entry.heard_repeats = 0;
+    entry.repeat_path_len = 0;
+    entry.delivered = false;
+    return;
+  }
+  // No match found — add as new entry
+  addToMsgLog("You", text, true, 0, -1, contact_name, NULL, packet_hash, expected_ack);
+}
+
+void UITask::onAckReceived(uint32_t ack_hash) {
+  if (ack_hash == 0) return;
+  for (int i = 0; i < _msg_log_count; i++) {
+    int idx = (_msg_log_next - 1 - i + MSG_LOG_SIZE) % MSG_LOG_SIZE;
+    auto& entry = _msg_log[idx];
+    if (!entry.is_sent) continue;
+    if (entry.channel_idx >= 0) continue;
+    if (entry.expected_ack == ack_hash) {
+      entry.delivered = true;
+      return;
+    }
+  }
 }
 
 void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) {
