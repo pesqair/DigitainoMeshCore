@@ -975,8 +975,7 @@ public:
             if (cc->path_hops > 0) {
               snprintf(tmp, sizeof(tmp), "Found! %d hops", cc->path_hops);
               display.setColor(DisplayDriver::YELLOW);
-              display.setCursor(0, 36);
-              display.print(tmp);
+              display.drawTextEllipsized(0, 36, display.width(), tmp);
               // Hop hex chain
               char hops[48] = "";
               int pos = 0;
@@ -987,8 +986,7 @@ public:
               display.drawTextEllipsized(0, 48, display.width(), hops);
             } else {
               display.setColor(DisplayDriver::YELLOW);
-              display.setCursor(0, 36);
-              display.print("Found! Direct");
+              display.drawTextEllipsized(0, 36, display.width(), "Found! Direct");
             }
             float snr_f = (float)cc->snr_x4 / 4.0f;
             snprintf(tmp, sizeof(tmp), "RSSI:%d SNR:%.1f", cc->rssi, snr_f);
@@ -1013,28 +1011,9 @@ public:
           display.setColor(DisplayDriver::YELLOW);
           display.drawTextEllipsized(0, 18, display.width(), ci.name);
 
-          // Show "last heard" below name
-          {
-            static char heard_buf[24];
-            uint32_t now = the_mesh.getRTCClock()->getCurrentTime();
-            if (ci.lastmod > 0 && now >= ci.lastmod) {
-              uint32_t ago = now - ci.lastmod;
-              if (ago < 60) snprintf(heard_buf, sizeof(heard_buf), "Heard: %lus ago", (unsigned long)ago);
-              else if (ago < 3600) snprintf(heard_buf, sizeof(heard_buf), "Heard: %lum ago", (unsigned long)(ago / 60));
-              else if (ago < 86400) snprintf(heard_buf, sizeof(heard_buf), "Heard: %luh ago", (unsigned long)(ago / 3600));
-              else snprintf(heard_buf, sizeof(heard_buf), "Heard: %lud ago", (unsigned long)(ago / 86400));
-            } else {
-              strcpy(heard_buf, "Heard: never");
-            }
-            display.setColor(DisplayDriver::LIGHT);
-            display.setTextSize(1);
-            display.setCursor(0, 28);
-            display.print(heard_buf);
-          }
-
           // Build combined list: actions first, then cached info lines
-          const char* items[12];
-          bool item_is_action[12];
+          const char* items[14];
+          bool item_is_action[14];
           int item_count = 0;
 
           // Actions
@@ -1053,7 +1032,22 @@ public:
           _ct_action_count = item_count;  // number of selectable actions
 
           // Cached info lines (not selectable)
-          static char info_lines[5][40];
+          static char info_lines[6][40];
+
+          // Last heard
+          {
+            uint32_t now = the_mesh.getRTCClock()->getCurrentTime();
+            if (ci.lastmod > 0 && now >= ci.lastmod) {
+              uint32_t ago = now - ci.lastmod;
+              if (ago < 60) snprintf(info_lines[5], sizeof(info_lines[5]), "Heard: %lus ago", (unsigned long)ago);
+              else if (ago < 3600) snprintf(info_lines[5], sizeof(info_lines[5]), "Heard: %lum ago", (unsigned long)(ago / 60));
+              else if (ago < 86400) snprintf(info_lines[5], sizeof(info_lines[5]), "Heard: %luh ago", (unsigned long)(ago / 3600));
+              else snprintf(info_lines[5], sizeof(info_lines[5]), "Heard: %lud ago", (unsigned long)(ago / 86400));
+            } else {
+              strcpy(info_lines[5], "Heard: never");
+            }
+            items[item_count] = info_lines[5]; item_is_action[item_count++] = false;
+          }
           ContactCache* cc = findCache(ci.id.pub_key);
           if (cc && cc->has_path_info) {
             if (cc->path_hops > 0) {
@@ -1097,7 +1091,7 @@ public:
             _ct_detail_scroll = item_count - 1;
 
           int visible = 3;
-          int y = 40;
+          int y = 30;
           for (int i = _ct_detail_scroll; i < _ct_detail_scroll + visible && i < item_count; i++, y += 12) {
             if (item_is_action[i] && i == _ct_action_sel) {
               display.setColor(DisplayDriver::YELLOW);
@@ -1536,7 +1530,7 @@ public:
             ContactInfo ci;
             if (the_mesh.getContactByIdx(_ct_sorted[_ct_sel], ci)) {
               ContactCache* cc = findCache(ci.id.pub_key);
-              int total = _ct_action_count;
+              int total = _ct_action_count + 1; // +1 for "last heard"
               if (cc && cc->has_path_info) total += 2;
               if (cc && cc->has_telem) total += 1;
               if (cc && cc->has_status) total += 2;
