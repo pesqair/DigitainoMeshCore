@@ -41,7 +41,7 @@ This is a customized version of MeshCore firmware specifically tailored for pers
 - **Navigation page** with full compass rose, heading arrow, and 16-point cardinal direction
 - **Speed and max speed** displayed in mph (current/max format)
 - **Altitude** in feet, satellite count, and lat/lon coordinates
-- **Odometer** tracking distance in miles (resettable with DOWN key)
+- **Odometer** tracking distance in miles (resettable with DOWN key) — currently broken and should not be trusted
 - **GPS speed HUD** on home screen showing speed + 8-point heading when moving (e.g. `25NE`), toggled from GPS page
 - **Screen lock** (UP key on NAV page) to keep display on and prevent accidental input
 - **Trip reset** (DOWN key on NAV page) to zero out max speed and odometer
