@@ -284,20 +284,44 @@ class HomeScreen : public UIScreen {
   void rebuildContactsSorted() {
     _ct_count = 0;
     int n = the_mesh.getNumContacts();
+    int fav_start = 0, fav_count = 0;
     // First pass: favorites
     for (int i = 0; i < n && _ct_count < 64; i++) {
       ContactInfo ci;
       if (the_mesh.getContactByIdx(i, ci) && (ci.flags & 0x01)) {
         _ct_sorted[_ct_count++] = i;
+        fav_count++;
       }
     }
     // Second pass: non-favorites
+    int nonfav_start = _ct_count;
     for (int i = 0; i < n && _ct_count < 64; i++) {
       ContactInfo ci;
       if (the_mesh.getContactByIdx(i, ci) && !(ci.flags & 0x01)) {
         _ct_sorted[_ct_count++] = i;
       }
     }
+    int nonfav_count = _ct_count - nonfav_start;
+    // Sort each group by lastmod descending (most recently heard first)
+    // Simple insertion sort (small N, no stdlib qsort context pointer needed)
+    auto sortGroup = [](uint16_t* arr, int count) {
+      for (int i = 1; i < count; i++) {
+        uint16_t key = arr[i];
+        ContactInfo ci_key;
+        the_mesh.getContactByIdx(key, ci_key);
+        int j = i - 1;
+        while (j >= 0) {
+          ContactInfo ci_j;
+          the_mesh.getContactByIdx(arr[j], ci_j);
+          if (ci_j.lastmod >= ci_key.lastmod) break;
+          arr[j + 1] = arr[j];
+          j--;
+        }
+        arr[j + 1] = key;
+      }
+    };
+    sortGroup(&_ct_sorted[fav_start], fav_count);
+    sortGroup(&_ct_sorted[nonfav_start], nonfav_count);
     if (_ct_sel >= _ct_count && _ct_count > 0) _ct_sel = _ct_count - 1;
   }
 
@@ -989,6 +1013,25 @@ public:
           display.setColor(DisplayDriver::YELLOW);
           display.drawTextEllipsized(0, 18, display.width(), ci.name);
 
+          // Show "last heard" below name
+          {
+            static char heard_buf[24];
+            uint32_t now = the_mesh.getRTCClock()->getCurrentTime();
+            if (ci.lastmod > 0 && now >= ci.lastmod) {
+              uint32_t ago = now - ci.lastmod;
+              if (ago < 60) snprintf(heard_buf, sizeof(heard_buf), "Heard: %lus ago", (unsigned long)ago);
+              else if (ago < 3600) snprintf(heard_buf, sizeof(heard_buf), "Heard: %lum ago", (unsigned long)(ago / 60));
+              else if (ago < 86400) snprintf(heard_buf, sizeof(heard_buf), "Heard: %luh ago", (unsigned long)(ago / 3600));
+              else snprintf(heard_buf, sizeof(heard_buf), "Heard: %lud ago", (unsigned long)(ago / 86400));
+            } else {
+              strcpy(heard_buf, "Heard: never");
+            }
+            display.setColor(DisplayDriver::LIGHT);
+            display.setTextSize(1);
+            display.setCursor(0, 28);
+            display.print(heard_buf);
+          }
+
           // Build combined list: actions first, then cached info lines
           const char* items[12];
           bool item_is_action[12];
@@ -1054,7 +1097,7 @@ public:
             _ct_detail_scroll = item_count - 1;
 
           int visible = 3;
-          int y = 30;
+          int y = 40;
           for (int i = _ct_detail_scroll; i < _ct_detail_scroll + visible && i < item_count; i++, y += 12) {
             if (item_is_action[i] && i == _ct_action_sel) {
               display.setColor(DisplayDriver::YELLOW);
