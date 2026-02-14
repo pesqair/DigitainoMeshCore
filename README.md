@@ -46,7 +46,7 @@ This is a customized version of MeshCore firmware specifically tailored for pers
 - **GPS DM** feature to send location coordinates to specific contacts
 - **Runtime preset configuration** via `/presets.txt` file
 - **Battery voltage toggle** on home screen
-- **Companion app sync** — channel messages sent from the device sync to the iOS/Android companion app
+- **Companion app sync** — bidirectional sync with the companion app (see details below)
 - Custom splash screen branding
 
 ## Building
@@ -75,9 +75,18 @@ Flash output located at: `.pio/build/WioTrackerL1_companion_radio_ble/firmware.z
 
 Create `/presets.txt` on the device's internal filesystem (one message per line) to customize quick message presets.
 
-## Companion App
+## Companion App Sync
 
-This firmware is compatible with the official MeshCore companion apps for channel messages. Direct messages (DMs) sent from the device currently don't sync to the companion app due to protocol limitations.
+This firmware is compatible with the official MeshCore companion apps (iOS/Android). The device UI and companion app share a single radio, so messages flow between them:
+
+**App → Device UI:**
+- Channel messages sent from the app appear in the device's message log (with repeat tracking)
+- DMs sent from the app appear in the device's message log
+- All received messages (channel and DM) appear on both simultaneously
+
+**Device UI → App:**
+- Channel messages sent from the device are queued to the app's offline queue, so the app sees them too
+- DMs sent from the device do **not** sync to the app — the protocol has no "outgoing" flag, so sent DMs would incorrectly appear as incoming in the companion app
 
 ## License
 
