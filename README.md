@@ -32,20 +32,30 @@ This is a customized version of MeshCore firmware specifically tailored for pers
 ### Radio & Signal
 - **Sent message repeat tracking**: counts how many times your packet was heard retransmitted
 - **Unique repeater accumulation**: "Heard by" shows all unique repeater hashes across all bounces (not just the last path)
-- **Signal info**: RSSI and SNR displayed for received messages and heard repeats
+- **Received message signal**: RSSI (dBm) and SNR (dB) displayed in message detail for incoming messages
+- **Repeat signal**: RSSI/SNR of the most recent heard retransmission shown in sent message detail
+- **Contact signal info**: cached RSSI and SNR shown in contact detail view
 - **Path display**: full repeater chain shown for incoming multi-hop messages
 
 ### Navigation
-- **Navigation page** with compass heading, GPS speed, odometer, and current coordinates
-- **GPS speed** (mph) displayed on home screen
-- **Screen lock** to prevent accidental input during navigation
+- **Navigation page** with full compass rose, heading arrow, and 16-point cardinal direction
+- **Speed and max speed** displayed in mph (current/max format)
+- **Altitude** in feet, satellite count, and lat/lon coordinates
+- **Odometer** tracking distance in miles (resettable with DOWN key)
+- **GPS speed HUD** on home screen showing speed + 8-point heading when moving (e.g. `25NE`), toggled from GPS page
+- **Screen lock** (UP key on NAV page) to keep display on and prevent accidental input
+- **Trip reset** (DOWN key on NAV page) to zero out max speed and odometer
+
+### Home Screen
+- **Battery voltage toggle**: UP/DOWN on home page switches between numeric voltage (`4.15V`) and battery icon with fill percentage (3.0V–4.2V range)
+- **Speed HUD**: when enabled, shows current speed and heading direction in the top bar
+- **SNR display**: last received packet SNR shown in top bar (takes priority over speed HUD)
 
 ### Other
 - **Channel selector** for multi-channel messaging
 - **Contact selector** for direct messaging (DMs)
 - **GPS DM** feature to send location coordinates to specific contacts
 - **Runtime preset configuration** via `/presets.txt` file
-- **Battery voltage toggle** on home screen
 - **Companion app sync** — bidirectional sync with the companion app (see details below)
 - Custom splash screen branding
 
