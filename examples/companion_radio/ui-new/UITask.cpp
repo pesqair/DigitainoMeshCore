@@ -582,8 +582,8 @@ public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, SensorManager* sensors, NodePrefs* node_prefs)
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
        _preset_sel(0), _msg_sel(0xFF), _msg_sel_prev(0xFF), _msg_scroll_px(0),
-       _msg_detail(false), _msg_detail_scroll(0), _msg_reply_menu(false), _msg_reply_sel(0), _shutdown_init(false), _show_voltage(false), _show_speed(false),
-       _show_snr(false), _gmt_offset(0), _pkt_sel(0), _pkt_detail(false), _pkt_detail_scroll(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _odo_last_lat(0), _odo_last_lon(0), _nav_screen_lock(false), _nav_has_waypoint(false),
+       _msg_detail(false), _msg_detail_scroll(0), _msg_reply_menu(false), _msg_reply_sel(0), _shutdown_init(false), _show_voltage(node_prefs->ui_flags & 0x01), _show_speed(node_prefs->ui_flags & 0x04),
+       _show_snr(node_prefs->ui_flags & 0x02), _gmt_offset(node_prefs->gmt_offset), _pkt_sel(0), _pkt_detail(false), _pkt_detail_scroll(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _odo_last_lat(0), _odo_last_lon(0), _nav_screen_lock(false), _nav_has_waypoint(false),
        _page_active(false), _settings_sel(0), _ct_filter(0), _msg_vscroll(0), _msg_filter(0), _msg_filter_count(0), _msg_compose_menu(false), _msg_compose_sel(0), _msg_target_menu(false), _msg_target_sel(0),
        _preset_target_choosing(false), _preset_target_sel(0), _preset_edit_mode(false), _preset_edit_sel(0),
        _ct_sel(0), _ct_count(0), _ct_action(false), _ct_action_sel(0), _ct_action_count(0), _ct_detail_scroll(0),
@@ -3989,6 +3989,8 @@ public:
       if (_settings_sel == id_gmt && (c == KEY_LEFT || c == KEY_RIGHT)) {
         if (c == KEY_LEFT && _gmt_offset > -12) _gmt_offset--;
         if (c == KEY_RIGHT && _gmt_offset < 14) _gmt_offset++;
+        _node_prefs->gmt_offset = _gmt_offset;
+        the_mesh.savePrefs();
         char alert[16];
         snprintf(alert, sizeof(alert), "GMT: %s%d", _gmt_offset >= 0 ? "+" : "", _gmt_offset);
         _task->showAlert(alert, 800);
@@ -3998,21 +4000,29 @@ public:
         if (_settings_sel == id_gmt) {
           // ENTER on GMT: treat same as RIGHT for convenience
           if (_gmt_offset < 14) _gmt_offset++;
+          _node_prefs->gmt_offset = _gmt_offset;
+          the_mesh.savePrefs();
           char alert[16];
           snprintf(alert, sizeof(alert), "GMT: %s%d", _gmt_offset >= 0 ? "+" : "", _gmt_offset);
           _task->showAlert(alert, 800);
         } else if (_settings_sel == id_voltage) {
           _show_voltage = !_show_voltage;
           if (_show_voltage) _show_snr = false;
+          _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0);
+          the_mesh.savePrefs();
           _task->showAlert(_show_voltage ? "Voltage: ON" : "Voltage: OFF", 800);
         } else if (_settings_sel == id_snr) {
           _show_snr = !_show_snr;
           if (_show_snr) _show_voltage = false;
+          _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0);
+          the_mesh.savePrefs();
           _task->showAlert(_show_snr ? "SNR: ON" : "SNR: OFF", 800);
         }
 #if ENV_INCLUDE_GPS == 1
         else if (_settings_sel == id_speed) {
           _show_speed = !_show_speed;
+          _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0);
+          the_mesh.savePrefs();
           _task->showAlert(_show_speed ? "Speed: ON" : "Speed: OFF", 800);
         }
 #endif

@@ -28,4 +28,6 @@ struct NodePrefs {  // persisted to file
   uint8_t  gps_enabled;      // GPS enabled flag (0=disabled, 1=enabled)
   uint32_t gps_interval;     // GPS read interval in seconds
   uint8_t autoadd_config;    // bitmask for auto-add contacts config
+  int8_t   gmt_offset;       // GMT offset in hours (-12 to +14)
+  uint8_t  ui_flags;         // bitmask: bit0=show_voltage, bit1=show_snr, bit2=show_speed
 };
