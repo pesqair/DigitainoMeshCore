@@ -597,20 +597,27 @@ class HomeScreen : public UIScreen {
       int bars_w = 11;
       int bars_y = 3;
 
+      // When synced, advance shared cycle index ONCE before computing either
+      bool synced = _task->_signal_synced &&
+                    _task->_tx_signal_count > 0 &&
+                    (millis() - _task->_tx_signal_time) / 1000 < 300;
+      if (synced && _task->_tx_signal_count > 1 && millis() - _task->_tx_cycle_time > 2000) {
+        _task->_tx_signal_cycle = (_task->_tx_signal_cycle + 1) % _task->_tx_signal_count;
+        _task->_tx_cycle_time = millis();
+      }
+
       // --- Compute RX signal data ---
-      // When synced (all auto-pings done), RX follows TX cycle index
-      // Otherwise: use cycling retransmission data OR latest single packet
       int rx_bars = 0;
       bool has_rx = false;
       uint8_t rx_id = 0;
-      if (_task->_signal_synced && _task->_rx_signal_count > 0 &&
+      if (synced && _task->_rx_signal_count > 0 &&
           (millis() - _task->_rx_signal_time) / 1000 < 300) {
-        // Synced mode: RX tracks TX cycle index
+        // Synced mode: RX uses same cycle index as TX
         has_rx = true;
         _needs_fast_refresh = true;
-        _task->_rx_signal_cycle = _task->_tx_signal_cycle;
-        if (_task->_rx_signal_cycle < _task->_rx_signal_count) {
-          auto& rxe = _task->_rx_signals[_task->_rx_signal_cycle];
+        uint8_t idx = _task->_tx_signal_cycle;
+        if (idx < _task->_rx_signal_count) {
+          auto& rxe = _task->_rx_signals[idx];
           rx_id = rxe.id;
           float snr = (float)rxe.snr_x4 / 4.0f;
           if (snr > 10) rx_bars = 4;
@@ -668,7 +675,7 @@ class HomeScreen : public UIScreen {
         if (tx_age < 300) {
           has_tx = true;
           _needs_fast_refresh = true;
-          if (_task->_tx_signal_count > 1 && millis() - _task->_tx_cycle_time > 2000) {
+          if (!synced && _task->_tx_signal_count > 1 && millis() - _task->_tx_cycle_time > 2000) {
             _task->_tx_signal_cycle = (_task->_tx_signal_cycle + 1) % _task->_tx_signal_count;
             _task->_tx_cycle_time = millis();
           }
