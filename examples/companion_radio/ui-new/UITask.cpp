@@ -3574,13 +3574,15 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
       entry.repeat_rssi = rssi;
       entry.repeat_snr_x4 = snr_x4;
       // Accumulate unique repeater hashes from this path, with per-repeater signal
+      // Path order: path[0]=first hop from sender (furthest), path[path_len-1]=last hop (direct to us)
+      int last_hop = path_len - 1;
       for (int p = 0; p < path_len; p++) {
         // Check if this repeater hash is already stored
         bool found = false;
         for (int r = 0; r < entry.repeat_path_len; r++) {
           if (entry.repeat_path[r] == path[p]) {
-            // Update signal only for direct hop (path[0] = transmitter to us)
-            if (p == 0) {
+            // Update signal only for last hop (direct transmitter to us)
+            if (p == last_hop) {
               entry.repeat_path_rssi[r] = rssi;
               entry.repeat_path_snr_x4[r] = snr_x4;
             }
@@ -3591,8 +3593,8 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
         if (!found && entry.repeat_path_len < MAX_PATH_SIZE) {
           int idx = entry.repeat_path_len++;
           entry.repeat_path[idx] = path[p];
-          // Only path[0] has measurable signal (direct transmitter to us)
-          if (p == 0) {
+          // Only last hop has measurable signal (direct transmitter to us)
+          if (p == last_hop) {
             entry.repeat_path_rssi[idx] = rssi;
             entry.repeat_path_snr_x4[idx] = snr_x4;
           } else {
