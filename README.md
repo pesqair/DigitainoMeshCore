@@ -91,7 +91,7 @@ Live sensor data display (battery voltage, temperature, humidity, pressure, alti
 
 ### Settings
 
-Toggle options: battery voltage display, SNR/RSSI bar, speed HUD, Bluetooth, and GPS.
+Toggle options: GMT offset (LEFT/RIGHT to adjust -12 to +14, applies to message timestamps), battery voltage display, SNR/RSSI bar, speed HUD, Bluetooth, and GPS.
 
 ### Shutdown
 
