@@ -608,6 +608,35 @@ public:
     }
   }
 
+  // Simulate word wrapping to count lines (matches drawStringMaxWidth behavior)
+  int getTextLines(DisplayDriver& display, const char* str, int max_width) {
+    if (max_width <= 0 || !str || !str[0]) return 1;
+    int lines = 1;
+    int lineWidth = 0;
+    const char* p = str;
+    while (*p) {
+      // Find next word: advance past non-break chars, then include the break char
+      const char* wEnd = p;
+      while (*wEnd && *wEnd != ' ' && *wEnd != '-' && *wEnd != '/') wEnd++;
+      if (*wEnd) wEnd++; // include the space/dash/slash
+      // Measure this word segment
+      char word[80];
+      int wLen = wEnd - p;
+      if (wLen >= (int)sizeof(word)) wLen = sizeof(word) - 1;
+      memcpy(word, p, wLen);
+      word[wLen] = 0;
+      int wWidth = display.getTextWidth(word);
+      if (lineWidth + wWidth >= max_width && lineWidth > 0) {
+        lines++;
+        lineWidth = wWidth;
+      } else {
+        lineWidth += wWidth;
+      }
+      p = wEnd;
+    }
+    return lines;
+  }
+
   int render(DisplayDriver& display) override {
     char tmp[80];
     _needs_fast_refresh = false;
@@ -1630,26 +1659,32 @@ public:
       if (_ct_gps_pending || _ct_gps_done || _ct_gps_no_fix) {
         display.setColor(DisplayDriver::YELLOW);
         snprintf(tmp, sizeof(tmp), "Location: %s", _ct_target_name);
-        display.drawTextEllipsized(0, TOP_BAR_H + 6, display.width(), tmp);
+        display.setCursor(0, TOP_BAR_H + 6);
+        display.printWordWrap(tmp, display.width());
+        int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
         if (_ct_gps_done) {
           ContactCache* cc = findCache(_ct_path_key);
           display.setColor(DisplayDriver::LIGHT);
           if (cc && cc->has_gps) {
             snprintf(tmp, sizeof(tmp), "%.5f, %.5f", cc->gps_lat, cc->gps_lon);
-            display.setCursor(0, TOP_BAR_H + 18);
-            display.print(tmp);
-            display.setColor(DisplayDriver::GREEN);
-            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 34, "ENTER to navigate");
+            if (cy >= TOP_BAR_H && cy < display.height())
+              display.drawTextEllipsized(0, cy, display.width(), tmp);
+            if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height()) {
+              display.setColor(DisplayDriver::GREEN);
+              display.drawTextCentered(display.width() / 2, cy + 11, "ENTER to navigate");
+            }
           } else {
-            display.setCursor(0, TOP_BAR_H + 22);
-            display.print("No GPS data");
+            if (cy >= TOP_BAR_H && cy < display.height())
+              display.drawTextEllipsized(0, cy, display.width(), "No GPS data");
           }
         } else if (_ct_gps_no_fix) {
           display.setColor(DisplayDriver::LIGHT);
-          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "No GPS fix");
+          if (cy >= TOP_BAR_H && cy < display.height())
+            display.drawTextCentered(display.width() / 2, cy, "No GPS fix");
         } else {
           display.setColor(DisplayDriver::LIGHT);
-          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Requesting...");
+          if (cy >= TOP_BAR_H && cy < display.height())
+            display.drawTextCentered(display.width() / 2, cy, "Requesting...");
           if (millis() > _ct_gps_timeout) {
             _ct_gps_pending = false;
             reselectContact(_ct_target_name);
@@ -1660,7 +1695,9 @@ public:
       } else if (_ct_status_pending || _ct_status_done) {
         display.setColor(DisplayDriver::YELLOW);
         snprintf(tmp, sizeof(tmp), "Status: %s", _ct_target_name);
-        display.drawTextEllipsized(0, TOP_BAR_H + 6, display.width(), tmp);
+        display.setCursor(0, TOP_BAR_H + 6);
+        display.printWordWrap(tmp, display.width());
+        int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
         if (_ct_status_done) {
           ContactCache* cc = findCache(_ct_path_key);
           display.setColor(DisplayDriver::LIGHT);
@@ -1671,18 +1708,19 @@ public:
               snprintf(tmp, sizeof(tmp), "Up: %lud %luh %lum", d, h, m);
             else
               snprintf(tmp, sizeof(tmp), "Up: %luh %lum", h, m);
-            display.setCursor(0, TOP_BAR_H + 18);
-            display.print(tmp);
+            if (cy >= TOP_BAR_H && cy < display.height())
+              display.drawTextEllipsized(0, cy, display.width(), tmp);
             snprintf(tmp, sizeof(tmp), "Power: %umV", cc->batt_mv);
-            display.setCursor(0, TOP_BAR_H + 30);
-            display.print(tmp);
+            if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height())
+              display.drawTextEllipsized(0, cy + 11, display.width(), tmp);
           } else {
-            display.setCursor(0, TOP_BAR_H + 22);
-            display.print("No data");
+            if (cy >= TOP_BAR_H && cy < display.height())
+              display.drawTextEllipsized(0, cy, display.width(), "No data");
           }
         } else {
           display.setColor(DisplayDriver::LIGHT);
-          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Waiting...");
+          if (cy >= TOP_BAR_H && cy < display.height())
+            display.drawTextCentered(display.width() / 2, cy, "Waiting...");
           if (millis() > _ct_status_timeout) {
             _ct_status_pending = false;
             reselectContact(_ct_target_name);
@@ -1693,27 +1731,29 @@ public:
       } else if (_ct_telem_pending || _ct_telem_done) {
         display.setColor(DisplayDriver::YELLOW);
         snprintf(tmp, sizeof(tmp), "Telemetry: %s", _ct_target_name);
-        display.drawTextEllipsized(0, TOP_BAR_H + 6, display.width(), tmp);
+        display.setCursor(0, TOP_BAR_H + 6);
+        display.printWordWrap(tmp, display.width());
+        int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
         if (_ct_telem_done) {
           ContactCache* cc = findCache(_ct_path_key);
           display.setColor(DisplayDriver::LIGHT);
           if (cc && cc->has_telem) {
             snprintf(tmp, sizeof(tmp), "Batt: %.2fV", cc->voltage);
-            display.setCursor(0, TOP_BAR_H + 18);
-            display.print(tmp);
+            if (cy >= TOP_BAR_H && cy < display.height())
+              display.drawTextEllipsized(0, cy, display.width(), tmp);
             if (cc->temperature > -274) {
               snprintf(tmp, sizeof(tmp), "Temp: %.1fC", cc->temperature);
-              display.setCursor(0, TOP_BAR_H + 30);
-              display.print(tmp);
+              if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height())
+                display.drawTextEllipsized(0, cy + 11, display.width(), tmp);
             }
           } else {
-            snprintf(tmp, sizeof(tmp), "No data");
-            display.setCursor(0, TOP_BAR_H + 22);
-            display.print(tmp);
+            if (cy >= TOP_BAR_H && cy < display.height())
+              display.drawTextEllipsized(0, cy, display.width(), "No data");
           }
         } else {
           display.setColor(DisplayDriver::LIGHT);
-          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Waiting...");
+          if (cy >= TOP_BAR_H && cy < display.height())
+            display.drawTextCentered(display.width() / 2, cy, "Waiting...");
           if (millis() > _ct_telem_timeout) {
             _ct_telem_pending = false;
             reselectContact(_ct_target_name);
@@ -1725,14 +1765,17 @@ public:
         // Path discovery in progress
         display.setColor(DisplayDriver::YELLOW);
         snprintf(tmp, sizeof(tmp), "Finding: %s", _ct_target_name);
-        display.drawTextEllipsized(0, TOP_BAR_H + 6, display.width(), tmp);
+        display.setCursor(0, TOP_BAR_H + 6);
+        display.printWordWrap(tmp, display.width());
+        int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
         if (_ct_path_found) {
           ContactCache* cc = findCache(_ct_path_key);
           if (cc && cc->has_path_info) {
             if (cc->path_hops > 0) {
               snprintf(tmp, sizeof(tmp), "Found! %d hops", cc->path_hops);
               display.setColor(DisplayDriver::YELLOW);
-              display.drawTextEllipsized(0, TOP_BAR_H + 18, display.width(), tmp);
+              if (cy >= TOP_BAR_H && cy < display.height())
+                display.drawTextEllipsized(0, cy, display.width(), tmp);
               // Hop hex chain
               char hops[48] = "";
               int pos = 0;
@@ -1740,22 +1783,31 @@ public:
                 pos += snprintf(hops + pos, sizeof(hops) - pos, "%s%02X", h > 0 ? " " : "", cc->path[h]);
               }
               display.setColor(DisplayDriver::LIGHT);
-              display.drawTextEllipsized(0, TOP_BAR_H + 30, display.width(), hops);
+              if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height())
+                display.drawTextEllipsized(0, cy + 11, display.width(), hops);
+              float snr_f = (float)cc->snr_x4 / 4.0f;
+              snprintf(tmp, sizeof(tmp), "RSSI:%d SNR:%.1f", cc->rssi, snr_f);
+              if (cy + 22 >= TOP_BAR_H && cy + 22 < display.height())
+                display.drawTextEllipsized(0, cy + 22, display.width(), tmp);
             } else {
               display.setColor(DisplayDriver::YELLOW);
-              display.drawTextEllipsized(0, TOP_BAR_H + 18, display.width(), "Found! Direct");
+              if (cy >= TOP_BAR_H && cy < display.height())
+                display.drawTextEllipsized(0, cy, display.width(), "Found! Direct");
+              float snr_f = (float)cc->snr_x4 / 4.0f;
+              snprintf(tmp, sizeof(tmp), "RSSI:%d SNR:%.1f", cc->rssi, snr_f);
+              display.setColor(DisplayDriver::LIGHT);
+              if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height())
+                display.drawTextEllipsized(0, cy + 11, display.width(), tmp);
             }
-            float snr_f = (float)cc->snr_x4 / 4.0f;
-            snprintf(tmp, sizeof(tmp), "RSSI:%d SNR:%.1f", cc->rssi, snr_f);
-            display.setColor(DisplayDriver::LIGHT);
-            display.drawTextEllipsized(0, TOP_BAR_H + 42, display.width(), tmp);
           } else {
             display.setColor(DisplayDriver::YELLOW);
-            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Path updated!");
+            if (cy >= TOP_BAR_H && cy < display.height())
+              display.drawTextCentered(display.width() / 2, cy, "Path updated!");
           }
         } else {
           display.setColor(DisplayDriver::LIGHT);
-          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Searching...");
+          if (cy >= TOP_BAR_H && cy < display.height())
+            display.drawTextCentered(display.width() / 2, cy, "Searching...");
           if (millis() > _ct_path_timeout) {
             _ct_path_pending = false;
             reselectContact(_ct_target_name);
@@ -1976,32 +2028,40 @@ public:
         if (_ct_gps_pending || _ct_gps_done || _ct_gps_no_fix) {
           display.setColor(DisplayDriver::YELLOW);
           snprintf(tmp, sizeof(tmp), "Location: %s", _ct_target_name);
-          display.drawTextEllipsized(0, TOP_BAR_H + 6, display.width(), tmp);
+          display.setCursor(0, TOP_BAR_H + 6);
+          display.printWordWrap(tmp, display.width());
+          int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
           if (_ct_gps_done) {
             ContactCache* cc = findCache(_ct_path_key);
             display.setColor(DisplayDriver::LIGHT);
             if (cc && cc->has_gps) {
               snprintf(tmp, sizeof(tmp), "%.5f, %.5f", cc->gps_lat, cc->gps_lon);
-              display.setCursor(0, TOP_BAR_H + 18);
-              display.print(tmp);
-              display.setColor(DisplayDriver::GREEN);
-              display.drawTextCentered(display.width() / 2, TOP_BAR_H + 34, "ENTER to navigate");
+              if (cy >= TOP_BAR_H && cy < display.height())
+                display.drawTextEllipsized(0, cy, display.width(), tmp);
+              if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height()) {
+                display.setColor(DisplayDriver::GREEN);
+                display.drawTextCentered(display.width() / 2, cy + 11, "ENTER to navigate");
+              }
             } else {
-              display.setCursor(0, TOP_BAR_H + 22);
-              display.print("No GPS data");
+              if (cy >= TOP_BAR_H && cy < display.height())
+                display.drawTextEllipsized(0, cy, display.width(), "No GPS data");
             }
           } else if (_ct_gps_no_fix) {
             display.setColor(DisplayDriver::LIGHT);
-            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "No GPS fix");
+            if (cy >= TOP_BAR_H && cy < display.height())
+              display.drawTextCentered(display.width() / 2, cy, "No GPS fix");
           } else {
             display.setColor(DisplayDriver::LIGHT);
-            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Requesting...");
+            if (cy >= TOP_BAR_H && cy < display.height())
+              display.drawTextCentered(display.width() / 2, cy, "Requesting...");
             if (millis() > _ct_gps_timeout) { _ct_gps_pending = false; _scan_action = true; _task->showAlert("Location timeout", 1200); }
           }
         } else if (_ct_status_pending || _ct_status_done) {
           display.setColor(DisplayDriver::YELLOW);
           snprintf(tmp, sizeof(tmp), "Status: %s", _ct_target_name);
-          display.drawTextEllipsized(0, TOP_BAR_H + 6, display.width(), tmp);
+          display.setCursor(0, TOP_BAR_H + 6);
+          display.printWordWrap(tmp, display.width());
+          int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
           if (_ct_status_done) {
             ContactCache* cc = findCache(_ct_path_key);
             display.setColor(DisplayDriver::LIGHT);
@@ -2010,61 +2070,82 @@ public:
               uint32_t d = up / 86400; uint32_t h = (up % 86400) / 3600; uint32_t m = (up % 3600) / 60;
               if (d > 0) snprintf(tmp, sizeof(tmp), "Up: %lud %luh %lum", d, h, m);
               else snprintf(tmp, sizeof(tmp), "Up: %luh %lum", h, m);
-              display.setCursor(0, TOP_BAR_H + 18); display.print(tmp);
+              if (cy >= TOP_BAR_H && cy < display.height())
+                display.drawTextEllipsized(0, cy, display.width(), tmp);
               snprintf(tmp, sizeof(tmp), "Power: %umV", cc->batt_mv);
-              display.setCursor(0, TOP_BAR_H + 30); display.print(tmp);
-            } else { display.setCursor(0, TOP_BAR_H + 22); display.print("No data"); }
+              if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height())
+                display.drawTextEllipsized(0, cy + 11, display.width(), tmp);
+            } else {
+              if (cy >= TOP_BAR_H && cy < display.height())
+                display.drawTextEllipsized(0, cy, display.width(), "No data");
+            }
           } else {
             display.setColor(DisplayDriver::LIGHT);
-            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Waiting...");
+            if (cy >= TOP_BAR_H && cy < display.height())
+              display.drawTextCentered(display.width() / 2, cy, "Waiting...");
             if (millis() > _ct_status_timeout) { _ct_status_pending = false; _scan_action = true; _task->showAlert("Status timeout", 1200); }
           }
         } else if (_ct_telem_pending || _ct_telem_done) {
           display.setColor(DisplayDriver::YELLOW);
           snprintf(tmp, sizeof(tmp), "Telemetry: %s", _ct_target_name);
-          display.drawTextEllipsized(0, TOP_BAR_H + 6, display.width(), tmp);
+          display.setCursor(0, TOP_BAR_H + 6);
+          display.printWordWrap(tmp, display.width());
+          int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
           if (_ct_telem_done) {
             ContactCache* cc = findCache(_ct_path_key);
             display.setColor(DisplayDriver::LIGHT);
             if (cc && cc->has_telem) {
               snprintf(tmp, sizeof(tmp), "Batt: %.2fV", cc->voltage);
-              display.setCursor(0, TOP_BAR_H + 18); display.print(tmp);
+              if (cy >= TOP_BAR_H && cy < display.height())
+                display.drawTextEllipsized(0, cy, display.width(), tmp);
               if (cc->temperature > -274) {
                 snprintf(tmp, sizeof(tmp), "Temp: %.1fC", cc->temperature);
-                display.setCursor(0, TOP_BAR_H + 30); display.print(tmp);
+                if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height())
+                  display.drawTextEllipsized(0, cy + 11, display.width(), tmp);
               }
-            } else { display.setCursor(0, TOP_BAR_H + 22); display.print("No data"); }
+            } else {
+              if (cy >= TOP_BAR_H && cy < display.height())
+                display.drawTextEllipsized(0, cy, display.width(), "No data");
+            }
           } else {
             display.setColor(DisplayDriver::LIGHT);
-            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Waiting...");
+            if (cy >= TOP_BAR_H && cy < display.height())
+              display.drawTextCentered(display.width() / 2, cy, "Waiting...");
             if (millis() > _ct_telem_timeout) { _ct_telem_pending = false; _scan_action = true; _task->showAlert("Telem timeout", 1200); }
           }
         } else if (_ct_path_pending) {
           display.setColor(DisplayDriver::YELLOW);
           snprintf(tmp, sizeof(tmp), "Finding: %s", _ct_target_name);
-          display.drawTextEllipsized(0, TOP_BAR_H + 6, display.width(), tmp);
+          display.setCursor(0, TOP_BAR_H + 6);
+          display.printWordWrap(tmp, display.width());
+          int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
           if (_ct_path_found) {
             ContactCache* cc = findCache(_ct_path_key);
             if (cc && cc->has_path_info) {
               if (cc->path_hops > 0) {
                 snprintf(tmp, sizeof(tmp), "Found! %d hops", cc->path_hops);
                 display.setColor(DisplayDriver::YELLOW);
-                display.drawTextEllipsized(0, TOP_BAR_H + 18, display.width(), tmp);
+                if (cy >= TOP_BAR_H && cy < display.height())
+                  display.drawTextEllipsized(0, cy, display.width(), tmp);
               } else {
                 display.setColor(DisplayDriver::YELLOW);
-                display.drawTextEllipsized(0, TOP_BAR_H + 18, display.width(), "Found! Direct");
+                if (cy >= TOP_BAR_H && cy < display.height())
+                  display.drawTextEllipsized(0, cy, display.width(), "Found! Direct");
               }
               float snr_f = (float)cc->snr_x4 / 4.0f;
               snprintf(tmp, sizeof(tmp), "RSSI:%d SNR:%.1f", cc->rssi, snr_f);
               display.setColor(DisplayDriver::LIGHT);
-              display.drawTextEllipsized(0, TOP_BAR_H + 30, display.width(), tmp);
+              if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height())
+                display.drawTextEllipsized(0, cy + 11, display.width(), tmp);
             } else {
               display.setColor(DisplayDriver::YELLOW);
-              display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Path updated!");
+              if (cy >= TOP_BAR_H && cy < display.height())
+                display.drawTextCentered(display.width() / 2, cy, "Path updated!");
             }
           } else {
             display.setColor(DisplayDriver::LIGHT);
-            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Searching...");
+            if (cy >= TOP_BAR_H && cy < display.height())
+              display.drawTextCentered(display.width() / 2, cy, "Searching...");
             if (millis() > _ct_path_timeout) { _ct_path_pending = false; _scan_action = true; _task->showAlert("No path found", 1200); }
           }
         }
@@ -2844,6 +2925,7 @@ public:
           _ct_gps_pending = false;
           _ct_gps_done = false;
           _ct_gps_no_fix = false;
+          _ct_detail_scroll = 0;
           reselectContact(_ct_target_name);
           _ct_action = true;
           return true;
@@ -2864,15 +2946,24 @@ public:
           }
           return true;
         }
+        if (_ct_gps_done) {
+          if (c == KEY_UP && _ct_detail_scroll > 0) { _ct_detail_scroll--; return true; }
+          if (c == KEY_DOWN && _ct_detail_scroll < 3) { _ct_detail_scroll++; return true; }
+        }
         return true;
       }
       if (_ct_status_pending || _ct_status_done) {
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_status_pending = false;
           _ct_status_done = false;
+          _ct_detail_scroll = 0;
           reselectContact(_ct_target_name);
           _ct_action = true;  // return to contact card
           return true;
+        }
+        if (_ct_status_done) {
+          if (c == KEY_UP && _ct_detail_scroll > 0) { _ct_detail_scroll--; return true; }
+          if (c == KEY_DOWN && _ct_detail_scroll < 3) { _ct_detail_scroll++; return true; }
         }
         return true;
       }
@@ -2880,9 +2971,14 @@ public:
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_telem_pending = false;
           _ct_telem_done = false;
+          _ct_detail_scroll = 0;
           reselectContact(_ct_target_name);
           _ct_action = true;  // return to contact card
           return true;
+        }
+        if (_ct_telem_done) {
+          if (c == KEY_UP && _ct_detail_scroll > 0) { _ct_detail_scroll--; return true; }
+          if (c == KEY_DOWN && _ct_detail_scroll < 3) { _ct_detail_scroll++; return true; }
         }
         return true;
       }
@@ -2890,9 +2986,14 @@ public:
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_path_pending = false;
           _ct_path_found = false;
+          _ct_detail_scroll = 0;
           reselectContact(_ct_target_name);
           _ct_action = true;  // return to contact card
           return true;
+        }
+        if (_ct_path_found) {
+          if (c == KEY_UP && _ct_detail_scroll > 0) { _ct_detail_scroll--; return true; }
+          if (c == KEY_DOWN && _ct_detail_scroll < 3) { _ct_detail_scroll++; return true; }
         }
         return true;
       }
@@ -2973,6 +3074,7 @@ public:
                 _ct_action = false;
                 _ct_path_pending = true;
                 _ct_path_found = false;
+                _ct_detail_scroll = 0;
                 _ct_path_timeout = millis() + est_timeout + 2000;
                 strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
                 _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
@@ -2987,6 +3089,7 @@ public:
                 _ct_action = false;
                 _ct_telem_pending = true;
                 _ct_telem_done = false;
+                _ct_detail_scroll = 0;
                 _ct_telem_timeout = millis() + est_timeout + 2000;
                 strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
                 _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
@@ -3001,6 +3104,7 @@ public:
                 _ct_action = false;
                 _ct_status_pending = true;
                 _ct_status_done = false;
+                _ct_detail_scroll = 0;
                 _ct_status_timeout = millis() + est_timeout + 2000;
                 strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
                 _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
@@ -3020,6 +3124,7 @@ public:
                 _ct_gps_pending = true;
                 _ct_gps_done = false;
                 _ct_gps_no_fix = false;
+                _ct_detail_scroll = 0;
                 _ct_gps_timeout = millis() + est_timeout + 2000;
                 strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
                 _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
@@ -3154,6 +3259,7 @@ public:
                 _scan_action = false;
                 _ct_path_pending = true;
                 _ct_path_found = false;
+                _ct_detail_scroll = 0;
                 _ct_path_timeout = millis() + est_timeout + 2000;
                 strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
                 _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
@@ -3168,6 +3274,7 @@ public:
                 _scan_action = false;
                 _ct_telem_pending = true;
                 _ct_telem_done = false;
+                _ct_detail_scroll = 0;
                 _ct_telem_timeout = millis() + est_timeout + 2000;
                 strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
                 _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
@@ -3182,6 +3289,7 @@ public:
                 _scan_action = false;
                 _ct_status_pending = true;
                 _ct_status_done = false;
+                _ct_detail_scroll = 0;
                 _ct_status_timeout = millis() + est_timeout + 2000;
                 strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
                 _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
@@ -3216,6 +3324,7 @@ public:
       if (_ct_gps_pending || _ct_gps_done || _ct_gps_no_fix) {
         if (c == KEY_CANCEL) {
           _ct_gps_pending = false; _ct_gps_done = false; _ct_gps_no_fix = false;
+          _ct_detail_scroll = 0;
           _scan_action = true;
           return true;
         }
@@ -3233,29 +3342,48 @@ public:
           return true;
         }
 #endif
+        if (_ct_gps_done) {
+          if (c == KEY_UP && _ct_detail_scroll > 0) { _ct_detail_scroll--; return true; }
+          if (c == KEY_DOWN && _ct_detail_scroll < 3) { _ct_detail_scroll++; return true; }
+        }
         return true;
       }
       if (_ct_status_pending || _ct_status_done) {
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_status_pending = false; _ct_status_done = false;
+          _ct_detail_scroll = 0;
           _scan_action = true;
           return true;
+        }
+        if (_ct_status_done) {
+          if (c == KEY_UP && _ct_detail_scroll > 0) { _ct_detail_scroll--; return true; }
+          if (c == KEY_DOWN && _ct_detail_scroll < 3) { _ct_detail_scroll++; return true; }
         }
         return true;
       }
       if (_ct_telem_pending || _ct_telem_done) {
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_telem_pending = false; _ct_telem_done = false;
+          _ct_detail_scroll = 0;
           _scan_action = true;
           return true;
+        }
+        if (_ct_telem_done) {
+          if (c == KEY_UP && _ct_detail_scroll > 0) { _ct_detail_scroll--; return true; }
+          if (c == KEY_DOWN && _ct_detail_scroll < 3) { _ct_detail_scroll++; return true; }
         }
         return true;
       }
       if (_ct_path_pending) {
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_path_pending = false; _ct_path_found = false;
+          _ct_detail_scroll = 0;
           _scan_action = true;
           return true;
+        }
+        if (_ct_path_found) {
+          if (c == KEY_UP && _ct_detail_scroll > 0) { _ct_detail_scroll--; return true; }
+          if (c == KEY_DOWN && _ct_detail_scroll < 3) { _ct_detail_scroll++; return true; }
         }
         return true;
       }
@@ -3388,6 +3516,7 @@ public:
                   _page_active = true;
                   _ct_path_pending = true;
                   _ct_path_found = false;
+                  _ct_detail_scroll = 0;
                   _ct_path_timeout = millis() + est_timeout + 2000;
                   strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
                   _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
