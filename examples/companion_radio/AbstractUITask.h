@@ -47,7 +47,7 @@ public:
   virtual void matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) { }
   virtual void onRxPacket(uint8_t first_path_byte) { _last_rx_id = first_path_byte; _last_rx_time = millis(); }
   virtual void onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_x4) { }
-  virtual void logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) { }
+  virtual void logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4, uint8_t route_type = 0, uint8_t payload_len = 0) { }
   uint8_t _last_rx_id = 0;
   unsigned long _last_rx_time = 0;
   virtual void onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature) { }

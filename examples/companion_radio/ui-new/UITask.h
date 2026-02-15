@@ -117,12 +117,16 @@ public:
     int16_t rssi;
     int8_t  snr_x4;
     unsigned long timestamp;  // millis()
+    uint8_t path_len;     // number of hops in path
+    uint8_t path[8];      // up to 8 path hop hashes
+    uint8_t route_type;   // 2-bit from header (PH_ROUTE_MASK)
+    uint8_t payload_len;  // size of payload in bytes
   };
   #define PACKET_LOG_SIZE 32
   PacketLogEntry _pkt_log[PACKET_LOG_SIZE];
   int _pkt_log_count = 0;
   int _pkt_log_next = 0;
-  void logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) override;
+  void logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4, uint8_t route_type = 0, uint8_t payload_len = 0) override;
 
   // Pending preset for Channel/DM target selection
   char _pending_preset[80];

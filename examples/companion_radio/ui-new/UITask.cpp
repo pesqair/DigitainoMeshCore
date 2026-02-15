@@ -226,6 +226,8 @@ class HomeScreen : public UIScreen {
   bool _show_speed;
   bool _show_snr;
   uint8_t _pkt_sel;  // selected packet in packet log page
+  bool _pkt_detail;           // whether detail view is showing
+  uint8_t _pkt_detail_scroll; // scroll offset in detail view
   int8_t _path_sel;   // -1 = no repeater selected, 0..N = index into path
   bool _needs_fast_refresh; // true when any visible age < 60s
   float _max_speed;
@@ -505,7 +507,7 @@ public:
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
        _preset_sel(0), _msg_sel(0), _msg_sel_prev(0xFF), _msg_scroll_px(0),
        _msg_detail(false), _msg_detail_scroll(0), _msg_reply_menu(false), _msg_reply_sel(0), _shutdown_init(false), _show_voltage(false), _show_speed(false),
-       _show_snr(false), _pkt_sel(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _nav_screen_lock(false),
+       _show_snr(false), _pkt_sel(0), _pkt_detail(false), _pkt_detail_scroll(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _nav_screen_lock(false),
        _page_active(false), _settings_sel(0), _ct_filter(0), _msg_filter(0), _msg_filter_count(0),
        _preset_target_choosing(false), _preset_target_sel(0), _preset_edit_mode(false), _preset_edit_sel(0),
        _ct_sel(0), _ct_count(0), _ct_action(false), _ct_action_sel(0), _ct_action_count(0), _ct_detail_scroll(0),
@@ -515,7 +517,7 @@ public:
        sensors_lpp(200) { memset(_ct_cache, 0, sizeof(_ct_cache)); }
 
   bool isUserBusy() const {
-    return _page_active || _msg_detail || _ct_action || _ct_path_pending || _ct_telem_pending ||
+    return _page_active || _msg_detail || _pkt_detail || _ct_action || _ct_path_pending || _ct_telem_pending ||
            _ct_telem_done || _ct_status_pending || _ct_status_done ||
            _preset_target_choosing || _preset_edit_mode;
   }
@@ -1630,55 +1632,160 @@ public:
     } else if (_page == HomePage::PACKETS) {
       display.setTextSize(1);
       int total = _task->_pkt_log_count;
-      display.setColor(DisplayDriver::YELLOW);
-      if (total > 0) {
-        snprintf(tmp, sizeof(tmp), "-- Packets %d/%d --", _pkt_sel + 1, total);
-      } else {
-        snprintf(tmp, sizeof(tmp), "-- Packets --");
-      }
-      display.drawTextCentered(display.width() / 2, TOP_BAR_H, tmp);
 
-      if (total == 0) {
-        display.setColor(DisplayDriver::LIGHT);
-        display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "No packets yet");
-      } else {
+      if (_pkt_detail && total > 0) {
+        // Detail view for selected packet
         if (_pkt_sel >= total) _pkt_sel = total - 1;
-        // Show 5 visible entries, scrolled so selection is visible
-        int visible = 5;
-        int scroll = 0;
-        if (_pkt_sel >= visible) scroll = _pkt_sel - visible + 1;
-        int y = TOP_BAR_H + 10;
-        for (int vi = 0; vi < visible && (scroll + vi) < total; vi++, y += 10) {
-          int item = scroll + vi;
-          int idx = (_task->_pkt_log_next - 1 - item + PACKET_LOG_SIZE) % PACKET_LOG_SIZE;
-          auto& pkt = _task->_pkt_log[idx];
-          const char* type_str;
+        int idx = (_task->_pkt_log_next - 1 - _pkt_sel + PACKET_LOG_SIZE) % PACKET_LOG_SIZE;
+        auto& pkt = _task->_pkt_log[idx];
+
+        display.setColor(DisplayDriver::YELLOW);
+        display.drawTextCentered(display.width() / 2, TOP_BAR_H, "-- Pkt Detail --");
+
+        // Build detail items
+        char detail_items[12][24];
+        uint8_t detail_count = 0;
+
+        // Type (full name)
+        {
+          const char* type_full;
           switch (pkt.payload_type) {
-            case 0x00: type_str = "REQ"; break;
-            case 0x01: type_str = "RSP"; break;
-            case 0x02: type_str = "TXT"; break;
-            case 0x03: type_str = "ACK"; break;
-            case 0x04: type_str = "ADV"; break;
-            case 0x05: case 0x06: type_str = "GRP"; break;
-            case 0x07: type_str = "ANO"; break;
-            case 0x08: type_str = "PTH"; break;
-            case 0x09: type_str = "TRC"; break;
-            case 0x0A: type_str = "MPT"; break;
-            case 0x0B: type_str = "CTL"; break;
-            case 0x0F: type_str = "RAW"; break;
-            default:   type_str = "???"; break;
+            case 0x00: type_full = "Request"; break;
+            case 0x01: type_full = "Response"; break;
+            case 0x02: type_full = "Text Msg"; break;
+            case 0x03: type_full = "ACK"; break;
+            case 0x04: type_full = "Advert"; break;
+            case 0x05: case 0x06: type_full = "Group"; break;
+            case 0x07: type_full = "Anon"; break;
+            case 0x08: type_full = "Path"; break;
+            case 0x09: type_full = "Trace"; break;
+            case 0x0A: type_full = "Multipart"; break;
+            case 0x0B: type_full = "Control"; break;
+            case 0x0F: type_full = "Raw"; break;
+            default:   type_full = "Unknown"; break;
           }
+          snprintf(detail_items[detail_count++], 24, "Type: %s", type_full);
+        }
+
+        // Route
+        {
+          const char* route_str;
+          switch (pkt.route_type) {
+            case 0x00: route_str = "Xport Flood"; break;
+            case 0x01: route_str = "Flood"; break;
+            case 0x02: route_str = "Direct"; break;
+            default:   route_str = "Unknown"; break;
+          }
+          snprintf(detail_items[detail_count++], 24, "Route: %s", route_str);
+        }
+
+        // RSSI
+        snprintf(detail_items[detail_count++], 24, "RSSI: %d", pkt.rssi);
+
+        // SNR
+        {
           float snr_f = (float)pkt.snr_x4 / 4.0f;
+          snprintf(detail_items[detail_count++], 24, "SNR: %.1f", snr_f);
+        }
+
+        // First Hop
+        snprintf(detail_items[detail_count++], 24, "1st Hop: %02X", pkt.first_hop);
+
+        // Path (if path_len > 0)
+        if (pkt.path_len > 0) {
+          char path_buf[20];
+          int pos = 0;
+          for (int p = 0; p < pkt.path_len && pos < 16; p++) {
+            if (p > 0) path_buf[pos++] = ' ';
+            pos += snprintf(&path_buf[pos], sizeof(path_buf) - pos, "%02X", pkt.path[p]);
+          }
+          path_buf[pos] = '\0';
+          snprintf(detail_items[detail_count++], 24, "Path: %s", path_buf);
+        } else {
+          snprintf(detail_items[detail_count++], 24, "Path: (direct)");
+        }
+
+        // Payload size
+        snprintf(detail_items[detail_count++], 24, "Payload: %d B", pkt.payload_len);
+
+        // Age
+        {
           unsigned long age_s = (millis() - pkt.timestamp) / 1000;
-          char age_buf[8];
-          if (age_s < 60) { snprintf(age_buf, sizeof(age_buf), "%lus", age_s); _needs_fast_refresh = true; }
-          else if (age_s < 3600) snprintf(age_buf, sizeof(age_buf), "%lum", age_s / 60);
-          else snprintf(age_buf, sizeof(age_buf), "%luh", age_s / 3600);
-          char marker = (item == _pkt_sel) ? '>' : ' ';
-          snprintf(tmp, sizeof(tmp), "%c%s %02X %d/%.1f %s", marker, type_str, pkt.first_hop, pkt.rssi, snr_f, age_buf);
-          display.setColor(item == _pkt_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+          if (age_s < 60) {
+            snprintf(detail_items[detail_count++], 24, "Age: %lus", age_s);
+            _needs_fast_refresh = true;
+          } else if (age_s < 3600) {
+            snprintf(detail_items[detail_count++], 24, "Age: %lum", age_s / 60);
+          } else {
+            snprintf(detail_items[detail_count++], 24, "Age: %luh", age_s / 3600);
+          }
+        }
+
+        // Clamp scroll
+        int detail_visible = 5;
+        int max_scroll = (detail_count > detail_visible) ? detail_count - detail_visible : 0;
+        if (_pkt_detail_scroll > max_scroll) _pkt_detail_scroll = max_scroll;
+
+        // Render detail rows
+        int y = TOP_BAR_H + 10;
+        for (int i = _pkt_detail_scroll; i < _pkt_detail_scroll + detail_visible && i < detail_count; i++, y += 10) {
+          display.setColor(DisplayDriver::LIGHT);
           display.setCursor(0, y);
-          display.print(tmp);
+          display.print(detail_items[i]);
+        }
+
+      } else {
+        // List view
+        display.setColor(DisplayDriver::YELLOW);
+        if (total > 0) {
+          snprintf(tmp, sizeof(tmp), "-- Packets %d/%d --", _pkt_sel + 1, total);
+        } else {
+          snprintf(tmp, sizeof(tmp), "-- Packets --");
+        }
+        display.drawTextCentered(display.width() / 2, TOP_BAR_H, tmp);
+
+        if (total == 0) {
+          display.setColor(DisplayDriver::LIGHT);
+          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "No packets yet");
+        } else {
+          if (_pkt_sel >= total) _pkt_sel = total - 1;
+          // Show 5 visible entries, scrolled so selection is visible
+          int visible = 5;
+          int scroll = 0;
+          if (_pkt_sel >= visible) scroll = _pkt_sel - visible + 1;
+          int y = TOP_BAR_H + 10;
+          for (int vi = 0; vi < visible && (scroll + vi) < total; vi++, y += 10) {
+            int item = scroll + vi;
+            int idx = (_task->_pkt_log_next - 1 - item + PACKET_LOG_SIZE) % PACKET_LOG_SIZE;
+            auto& pkt = _task->_pkt_log[idx];
+            const char* type_str;
+            switch (pkt.payload_type) {
+              case 0x00: type_str = "REQ"; break;
+              case 0x01: type_str = "RSP"; break;
+              case 0x02: type_str = "TXT"; break;
+              case 0x03: type_str = "ACK"; break;
+              case 0x04: type_str = "ADV"; break;
+              case 0x05: case 0x06: type_str = "GRP"; break;
+              case 0x07: type_str = "ANO"; break;
+              case 0x08: type_str = "PTH"; break;
+              case 0x09: type_str = "TRC"; break;
+              case 0x0A: type_str = "MPT"; break;
+              case 0x0B: type_str = "CTL"; break;
+              case 0x0F: type_str = "RAW"; break;
+              default:   type_str = "???"; break;
+            }
+            float snr_f = (float)pkt.snr_x4 / 4.0f;
+            unsigned long age_s = (millis() - pkt.timestamp) / 1000;
+            char age_buf[8];
+            if (age_s < 60) { snprintf(age_buf, sizeof(age_buf), "%lus", age_s); _needs_fast_refresh = true; }
+            else if (age_s < 3600) snprintf(age_buf, sizeof(age_buf), "%lum", age_s / 60);
+            else snprintf(age_buf, sizeof(age_buf), "%luh", age_s / 3600);
+            char marker = (item == _pkt_sel) ? '>' : ' ';
+            snprintf(tmp, sizeof(tmp), "%c%s %02X %d/%.1f %s", marker, type_str, pkt.first_hop, pkt.rssi, snr_f, age_buf);
+            display.setColor(item == _pkt_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+            display.setCursor(0, y);
+            display.print(tmp);
+          }
         }
       }
     } else if (_page == HomePage::ADVERT) {
@@ -2672,7 +2779,26 @@ public:
 #endif
     if (_page == HomePage::PACKETS) {
       int total = _task->_pkt_log_count;
-      if (total > 0) {
+      if (_pkt_detail) {
+        if (c == KEY_CANCEL) {
+          _pkt_detail = false;
+          _pkt_detail_scroll = 0;
+          return true;
+        }
+        if (c == KEY_UP) {
+          if (_pkt_detail_scroll > 0) _pkt_detail_scroll--;
+          return true;
+        }
+        if (c == KEY_DOWN) {
+          _pkt_detail_scroll++;  // clamped during render
+          return true;
+        }
+      } else if (total > 0) {
+        if (c == KEY_ENTER) {
+          _pkt_detail = true;
+          _pkt_detail_scroll = 0;
+          return true;
+        }
         if (c == KEY_UP) {
           _pkt_sel = (_pkt_sel + total - 1) % total;
           return true;
@@ -3567,13 +3693,19 @@ void UITask::sendPresetDM(const ContactInfo& contact) {
   gotoHomeScreen();
 }
 
-void UITask::logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) {
+void UITask::logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4, uint8_t route_type, uint8_t payload_len) {
   auto& entry = _pkt_log[_pkt_log_next];
   entry.payload_type = payload_type;
   entry.first_hop = (path_len > 0 && path != NULL) ? path[0] : 0;
   entry.rssi = rssi;
   entry.snr_x4 = snr_x4;
   entry.timestamp = millis();
+  entry.route_type = route_type;
+  entry.payload_len = payload_len;
+  entry.path_len = (path_len > 8) ? 8 : path_len;
+  if (path_len > 0 && path != NULL) {
+    memcpy(entry.path, path, entry.path_len);
+  }
   _pkt_log_next = (_pkt_log_next + 1) % PACKET_LOG_SIZE;
   if (_pkt_log_count < PACKET_LOG_SIZE) _pkt_log_count++;
 }
