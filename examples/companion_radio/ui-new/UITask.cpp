@@ -20,7 +20,7 @@
 #endif
 
 #define LONG_PRESS_MILLIS   1200
-#define TOP_BAR_H           10   // height of always-visible top bar
+#define TOP_BAR_H           14   // height of always-visible top bar
 
 #ifndef UI_RECENT_LIST_SIZE
   #define UI_RECENT_LIST_SIZE 4
@@ -512,55 +512,223 @@ class HomeScreen : public UIScreen {
     return false;
   }
 
-  void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts) {
+  // Renders vertical battery icon (5px wide x 12px tall) at right_edge.
+  // Returns new right_x (left edge of battery area) for further right-zone packing.
+  int renderVerticalBattery(DisplayDriver& display, int right_edge, uint16_t batteryMilliVolts) {
     if (_show_voltage) {
-      // Show voltage as text in the top-right area
+      // Show voltage as text instead of icon
       char vbuf[8];
       float volts = (float)batteryMilliVolts / 1000.0f;
       snprintf(vbuf, sizeof(vbuf), "%.2fV", volts);
       display.setColor(DisplayDriver::GREEN);
       display.setTextSize(1);
-      int textX = display.width() - (int)strlen(vbuf) * 6 - 2;
-      display.setCursor(textX, 1);
+      int tw = (int)strlen(vbuf) * 6;
+      int textX = right_edge - tw;
+      display.setCursor(textX, 3);
       display.print(vbuf);
-      return;
+      return textX - 2;
     }
 
-    // Convert millivolts to percentage
 #ifndef BATT_MIN_MILLIVOLTS
   #define BATT_MIN_MILLIVOLTS 3000
 #endif
 #ifndef BATT_MAX_MILLIVOLTS
   #define BATT_MAX_MILLIVOLTS 4200
 #endif
-    const int minMilliVolts = BATT_MIN_MILLIVOLTS;
-    const int maxMilliVolts = BATT_MAX_MILLIVOLTS;
-    int batteryPercentage = ((batteryMilliVolts - minMilliVolts) * 100) / (maxMilliVolts - minMilliVolts);
-    if (batteryPercentage < 0) batteryPercentage = 0; // Clamp to 0%
-    if (batteryPercentage > 100) batteryPercentage = 100; // Clamp to 100%
+    int pct = ((batteryMilliVolts - BATT_MIN_MILLIVOLTS) * 100) / (BATT_MAX_MILLIVOLTS - BATT_MIN_MILLIVOLTS);
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
 
-    // battery icon
-    int iconWidth = 24;
-    int iconHeight = 10;
-    int iconX = display.width() - iconWidth - 5; // Position the icon near the top-right corner
-    int iconY = 0;
+    // Vertical battery: 5px wide x 12px tall (1px cap + 11px body)
+    int bw = 5, bh = 11;
+    int bx = right_edge - bw;
+    int by = 2;  // top of body
+
     display.setColor(DisplayDriver::GREEN);
+    // Cap (centered on top, 3px wide x 1px)
+    display.fillRect(bx + 1, by - 1, 3, 1);
+    // Body outline
+    display.drawRect(bx, by, bw, bh);
+    // Fill segments (4 segments, 3x2 each, bottom-up)
+    int segs = 0;
+    if (pct >= 88) segs = 4;
+    else if (pct >= 63) segs = 3;
+    else if (pct >= 38) segs = 2;
+    else if (pct >= 13) segs = 1;
+    for (int s = 0; s < segs; s++) {
+      int sy = by + bh - 2 - s * 2 - 1;  // bottom-up positioning
+      display.fillRect(bx + 1, sy, 3, 2);
+    }
 
-    // battery outline
-    display.drawRect(iconX, iconY, iconWidth, iconHeight);
+    return bx - 2;
+  }
 
-    // battery "cap"
-    display.fillRect(iconX + iconWidth, iconY + (iconHeight / 4), 3, iconHeight / 2);
+  void renderStatusBar(DisplayDriver& display) {
+    display.setColor(DisplayDriver::GREEN);
+    display.setTextSize(1);
 
-    // fill the battery based on the percentage
-    int fillWidth = (batteryPercentage * (iconWidth - 4)) / 100;
-    display.fillRect(iconX + 2, iconY + 2, fillWidth, iconHeight - 4);
+    // === RIGHT ZONE (packed from right edge) ===
+    int right_x = display.width();
 
-    // show muted icon if buzzer is muted
+    // 1. Vertical battery
+    right_x = renderVerticalBattery(display, right_x, _task->getBattMilliVolts());
+
+    // 2. Mute icon (8x8, shown when buzzer is quiet)
 #ifdef PIN_BUZZER
     if (_task->isBuzzerQuiet()) {
+      right_x -= 8;
       display.setColor(DisplayDriver::RED);
-      display.drawXbm(iconX - 9, iconY + 1, muted_icon, 8, 8);
+      display.drawXbm(right_x, 3, muted_icon, 8, 8);
+      right_x -= 2;
+    }
+#endif
+
+    // 3. Signal bars + repeater hex (when _show_snr is ON)
+    if (_show_snr) {
+      // Determine signal level (0-4 bars) from last received packet SNR
+      // Algorithm matches PocketMesh iOS: pure SNR thresholds
+      int bars = 0;
+      bool has_signal = false;
+      if (_task->_last_rx_time > 0) {
+        unsigned long age_s = (millis() - _task->_last_rx_time) / 1000;
+        if (age_s < 300) {  // within 5 minutes
+          has_signal = true;
+          float snr = radio_driver.getLastSNR();
+          if (snr > 10) bars = 4;
+          else if (snr > 5) bars = 3;
+          else if (snr > 0) bars = 2;
+          else if (snr > -10) bars = 1;
+          // else bars = 0
+        }
+      }
+      // Draw 4 bars (11px wide x 10px tall area)
+      int bars_w = 11;
+      right_x -= bars_w;
+      int bars_x = right_x;
+      int bars_y = 3;
+      for (int b = 0; b < 4; b++) {
+        int bh = 3 + b * 2;  // heights: 3, 5, 7, 9
+        int bx = bars_x + b * 3;
+        int by = bars_y + (10 - bh);
+        display.setColor(b < bars ? DisplayDriver::GREEN : DisplayDriver::LIGHT);
+        if (b < bars) {
+          display.fillRect(bx, by, 2, bh);
+        } else {
+          display.drawRect(bx, by, 2, bh);
+        }
+      }
+      right_x -= 1;
+      // Show repeater hex ID next to signal bars
+      if (has_signal && _task->_last_rx_id != 0) {
+        char hex_id[4];
+        snprintf(hex_id, sizeof(hex_id), "%02X", _task->_last_rx_id);
+        int hw = 2 * 6;  // 2 chars * 6px
+        right_x -= hw;
+        display.setColor(DisplayDriver::LIGHT);
+        display.setCursor(right_x, 3);
+        display.print(hex_id);
+        right_x -= 1;
+      }
+    }
+
+    // 4. GPS indicator
+#if ENV_INCLUDE_GPS == 1
+    {
+      bool gps_on = _task->getGPSState();
+      if (gps_on) {
+        LocationProvider* nmea = sensors.getLocationProvider();
+        char gps_buf[6];
+        if (nmea == NULL || !nmea->isValid()) {
+          strcpy(gps_buf, "G?");
+        } else {
+          snprintf(gps_buf, sizeof(gps_buf), "G%ld", nmea->satellitesCount());
+        }
+        int gw = (int)strlen(gps_buf) * 6;
+        right_x -= gw;
+        display.setColor(DisplayDriver::LIGHT);
+        display.setCursor(right_x, 3);
+        display.print(gps_buf);
+        right_x -= 2;
+      }
+    }
+#endif
+
+    // === CENTER: HH:MM clock ===
+    int clock_x = -1;
+    {
+      uint32_t now = _rtc->getCurrentTime();
+      if (now > 1577836800) {
+        uint32_t t = now + _gmt_offset * 3600;
+        int mins = (t / 60) % 60;
+        int hours = (t / 3600) % 24;
+        char clk[6];
+        snprintf(clk, sizeof(clk), "%02d:%02d", hours, mins);
+        int cw = 5 * 6;  // 5 chars * 6px
+        clock_x = (display.width() - cw) / 2;
+        // Ensure clock doesn't overlap right zone
+        if (clock_x + cw > right_x) clock_x = right_x - cw - 1;
+        display.setColor(DisplayDriver::GREEN);
+        display.setCursor(clock_x, 3);
+        display.print(clk);
+      }
+    }
+
+    // === LEFT ZONE (packed from left edge) ===
+    int left_x = 0;
+    int left_max = (clock_x > 0) ? clock_x - 2 : right_x - 2;
+
+    // 1. Node name (home page only)
+    if (!_page_active || _page == HomePage::FIRST) {
+      char filtered_name[sizeof(_node_prefs->node_name)];
+      display.translateUTF8ToBlocks(filtered_name, _node_prefs->node_name, sizeof(filtered_name));
+      display.setColor(DisplayDriver::GREEN);
+      display.drawTextEllipsized(left_x, 3, left_max - left_x, filtered_name);
+      left_x += display.getTextWidth(filtered_name);
+      if (left_x > left_max) left_x = left_max;
+    }
+
+    // 2. Envelope + unread count
+    int msg_count = _task->getMsgCount();
+    if (msg_count > 0) {
+      if (left_x > 0) left_x += 2;
+      if (left_x + 7 <= left_max) {
+        display.setColor(DisplayDriver::YELLOW);
+        display.drawXbm(left_x, 5, envelope_icon, 7, 5);
+        left_x += 8;
+        char cnt[6];
+        snprintf(cnt, sizeof(cnt), "%d", msg_count);
+        if (left_x + (int)strlen(cnt) * 6 <= left_max) {
+          display.setCursor(left_x, 3);
+          display.print(cnt);
+          left_x += (int)strlen(cnt) * 6;
+        }
+      }
+    }
+
+    // 3. Speed/compass (auto when GPS speed > 2mph)
+#if ENV_INCLUDE_GPS == 1
+    if (_show_speed) {
+      LocationProvider* nmea = sensors.getLocationProvider();
+      if (nmea != NULL && nmea->isValid()) {
+        float speed_mph = nmea->getSpeed() / 1000.0f * 1.15078f;
+        if (speed_mph > 2.0f) {
+          static const char* hud_dirs[] = {"N","NE","E","SE","S","SW","W","NW"};
+          float course_deg = nmea->getCourse() / 1000.0f;
+          int di = ((int)(course_deg + 22.5f) % 360) / 45;
+          if (di < 0) di = 0;
+          if (di > 7) di = 7;
+          char spd[14];
+          snprintf(spd, sizeof(spd), "%.0f%s", speed_mph, hud_dirs[di]);
+          int sw = (int)strlen(spd) * 6;
+          if (left_x > 0) left_x += 2;
+          if (left_x + sw <= left_max) {
+            display.setColor(DisplayDriver::GREEN);
+            display.setCursor(left_x, 3);
+            display.print(spd);
+            left_x += sw;
+          }
+        }
+      }
     }
 #endif
   }
@@ -656,62 +824,9 @@ public:
     _needs_fast_refresh = false;
     display.setTextSize(1);
     display.setColor(DisplayDriver::GREEN);
-    char filtered_name[sizeof(_node_prefs->node_name)];
-    display.translateUTF8ToBlocks(filtered_name, _node_prefs->node_name, sizeof(filtered_name));
 
     // === TOP BAR (always visible) ===
-    if (_show_snr) {
-      // SNR mode: hide node name, show full-width SNR info
-      char snr_buf[28];
-      int pos = snprintf(snr_buf, sizeof(snr_buf), "%02X %.0f/%.1f", _task->_last_rx_id, radio_driver.getLastRSSI(), radio_driver.getLastSNR());
-      if (_task->_last_rx_time > 0) {
-        unsigned long age_s = (millis() - _task->_last_rx_time) / 1000;
-        if (age_s < 60) { snprintf(snr_buf + pos, sizeof(snr_buf) - pos, " %lus", age_s); _needs_fast_refresh = true; }
-        else if (age_s < 3600) snprintf(snr_buf + pos, sizeof(snr_buf) - pos, " %lum", age_s / 60);
-        else snprintf(snr_buf + pos, sizeof(snr_buf) - pos, " %luh", age_s / 3600);
-      }
-      display.setCursor(0, 0);
-      display.print(snr_buf);
-    } else {
-      // Normal mode: show node name + battery
-      display.setCursor(0, 0);
-      display.print(filtered_name);
-      renderBatteryIndicator(display, _task->getBattMilliVolts());
-#if ENV_INCLUDE_GPS == 1
-      if (_show_speed) {
-      // speed + direction HUD (between name and battery)
-      LocationProvider* nmea = sensors.getLocationProvider();
-      float speed_mph = 0;
-      bool moving = false;
-      if (nmea != NULL && nmea->isValid()) {
-        speed_mph = nmea->getSpeed() / 1000.0f * 1.15078f;
-        moving = speed_mph > 2.0f;
-      }
-      // 8-point compass (max 2 chars)
-      static const char* hud_dirs[] = {"N","NE","E","SE","S","SW","W","NW"};
-      char spd[14];
-      if (moving) {
-        float course_deg = (nmea != NULL) ? nmea->getCourse() / 1000.0f : 0;
-        int di = ((int)(course_deg + 22.5f) % 360) / 45;
-        if (di < 0) di = 0;
-        if (di > 7) di = 7;
-        snprintf(spd, sizeof(spd), "%.0f%s", speed_mph, hud_dirs[di]);
-      } else {
-        snprintf(spd, sizeof(spd), "%.0fmph", speed_mph);
-      }
-      display.setColor(DisplayDriver::GREEN);
-      display.setTextSize(1);
-      int nameEnd = (int)strlen(filtered_name) * 6 + 2;
-      int battStart = _show_voltage
-        ? display.width() - 5 * 6 - 2
-        : display.width() - 24 - 5;
-      int spdX = nameEnd + (battStart - nameEnd - (int)strlen(spd) * 6) / 2;
-      if (spdX < nameEnd) spdX = nameEnd;
-      display.setCursor(spdX, 1);
-      display.print(spd);
-      }
-#endif
-    }
+    renderStatusBar(display);
 
     if (!_page_active) {
       // === LEVEL 1: CAROUSEL MODE ===
@@ -794,7 +909,7 @@ public:
       display.setColor(DisplayDriver::YELLOW);
       display.setTextSize(2);
       sprintf(tmp, "MSG: %d", _task->getMsgCount());
-      display.drawTextCentered(display.width() / 2, TOP_BAR_H + 2, tmp);
+      display.drawTextCentered(display.width() / 2, TOP_BAR_H + 0, tmp);
 
       // Show date/time from RTC
       {
@@ -830,11 +945,11 @@ public:
           snprintf(tmp, sizeof(tmp), "%02d-%s %02d:%02d", day, mnames[month], hours, mins);
           display.setTextSize(1);
           display.setColor(DisplayDriver::LIGHT);
-          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 20, tmp);
+          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 18, tmp);
         } else {
           display.setTextSize(1);
           display.setColor(DisplayDriver::LIGHT);
-          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 20, "No time set");
+          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 18, "No time set");
         }
       }
 
@@ -842,18 +957,18 @@ public:
         IPAddress ip = WiFi.localIP();
         snprintf(tmp, sizeof(tmp), "IP: %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
         display.setTextSize(1);
-        display.drawTextCentered(display.width() / 2, TOP_BAR_H + 38, tmp);
+        display.drawTextCentered(display.width() / 2, TOP_BAR_H + 36, tmp);
       #endif
       if (_task->hasConnection()) {
         display.setColor(DisplayDriver::GREEN);
         display.setTextSize(1);
-        display.drawTextCentered(display.width() / 2, TOP_BAR_H + 30, "< Connected >");
+        display.drawTextCentered(display.width() / 2, TOP_BAR_H + 28, "< Connected >");
 
       } else if (the_mesh.getBLEPin() != 0) { // BT pin
         display.setColor(DisplayDriver::RED);
         display.setTextSize(2);
         sprintf(tmp, "Pin:%d", the_mesh.getBLEPin());
-        display.drawTextCentered(display.width() / 2, TOP_BAR_H + 30, tmp);
+        display.drawTextCentered(display.width() / 2, TOP_BAR_H + 28, tmp);
       }
     } else if (_page == HomePage::MESSAGES) {
       display.setTextSize(1);
@@ -1111,8 +1226,8 @@ public:
         }
 
         // Render visible items from scroll offset (11px spacing to fit 4 rows in 64px display)
-        int y = TOP_BAR_H + 11;
-        for (int i = _msg_detail_scroll; i < _msg_detail_scroll + detail_visible && i < detail_count; i++, y += 11) {
+        int y = TOP_BAR_H + 10;
+        for (int i = _msg_detail_scroll; i < _msg_detail_scroll + detail_visible && i < detail_count; i++, y += 10) {
           bool is_path_line = ((i == path_detail_idx) || (i == heard_detail_idx));
           if (is_path_line) {
             // Render path/heard-by with per-repeater highlighting
@@ -1276,8 +1391,8 @@ public:
           if (_msg_compose_sel >= visible) scroll_top = _msg_compose_sel - visible + 1;
           if (scroll_top > total_items - visible) scroll_top = total_items - visible;
           if (scroll_top < 0) scroll_top = 0;
-          int y = TOP_BAR_H + 11;
-          for (int v = scroll_top; v < scroll_top + visible && v < total_items; v++, y += 11) {
+          int y = TOP_BAR_H + 10;
+          for (int v = scroll_top; v < scroll_top + visible && v < total_items; v++, y += 10) {
             bool is_sel = (v == (int)_msg_compose_sel);
             display.setColor(is_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
             if (is_sel) {
@@ -1387,7 +1502,7 @@ public:
 
           // Now render: walk messages, skip display lines before _msg_vscroll
           int cur_dline = 0;
-          int y = TOP_BAR_H + 11;
+          int y = TOP_BAR_H + 10;
           int lines_drawn = 0;
           for (int v = 0; v < filtered_total && lines_drawn < display_lines; v++) {
             int log_idx = getFilteredMsgIndex(v);
@@ -1440,7 +1555,7 @@ public:
                 display.setCursor(x_off + (is_sel && sl == 0 ? 8 : (sl == 0 ? 8 : 0)), y);
                 display.drawTextEllipsized(x_off + (sl == 0 ? 8 : 0), y,
                                            (sl == 0 ? avail_w : avail_w - indent_px + 12), sub);
-                y += 11;
+                y += 10;
                 lines_drawn++;
               }
               int max_ch = (sl == 0) ? first_chars : cont_chars;
@@ -1486,8 +1601,8 @@ public:
           if (scroll_top < 0) scroll_top = 0;
 
           int avail_w = display.width() - 8; // pixels available for text after ">" marker
-          int y = TOP_BAR_H + 11;
-          for (int v = scroll_top; v < scroll_top + visible && v < total; v++, y += 11) {
+          int y = TOP_BAR_H + 10;
+          for (int v = scroll_top; v < scroll_top + visible && v < total; v++, y += 10) {
             int log_idx = getFilteredMsgIndex(v);
             if (log_idx < 0) break;
             int buf_idx = (_task->_msg_log_next - 1 - log_idx + MSG_LOG_SIZE) % MSG_LOG_SIZE;
@@ -1589,7 +1704,7 @@ public:
           if (scroll_top > preset_count - visible) scroll_top = preset_count - visible;
           if (scroll_top < 0) scroll_top = 0;
 
-          int y = TOP_BAR_H + 11;
+          int y = TOP_BAR_H + 10;
           int vi = 0;
           for (int i = 0; i < PRESET_MSG_COUNT && vi < scroll_top + visible; i++) {
             if (preset_buf[i][0] == '\0') continue;
@@ -1601,7 +1716,7 @@ public:
             }
             display.setColor(vi == _preset_edit_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
             display.drawTextEllipsized(8, y, display.width() - 8, preset_buf[i]);
-            y += 11;
+            y += 10;
             vi++;
           }
         }
@@ -1616,8 +1731,8 @@ public:
         if (scroll_top > total_items - visible) scroll_top = total_items - visible;
         if (scroll_top < 0) scroll_top = 0;
 
-        int y = TOP_BAR_H + 11;
-        for (int i = scroll_top; i < scroll_top + visible && i < total_items; i++, y += 11) {
+        int y = TOP_BAR_H + 10;
+        for (int i = scroll_top; i < scroll_top + visible && i < total_items; i++, y += 10) {
           if (i == _preset_sel) {
             display.setColor(DisplayDriver::YELLOW);
             display.setCursor(0, y);
@@ -1647,7 +1762,7 @@ public:
       the_mesh.getRecentlyHeard(recent, UI_RECENT_LIST_SIZE);
       display.setColor(DisplayDriver::GREEN);
       int y = TOP_BAR_H + 2;
-      for (int i = 0; i < UI_RECENT_LIST_SIZE; i++, y += 11) {
+      for (int i = 0; i < UI_RECENT_LIST_SIZE; i++, y += 10) {
         auto a = &recent[i];
         if (a->name[0] == 0) continue;  // empty slot
         int secs = _rtc->getCurrentTime() - a->recv_timestamp;
@@ -1676,7 +1791,7 @@ public:
         snprintf(tmp, sizeof(tmp), "Location: %s", _ct_target_name);
         display.setCursor(0, TOP_BAR_H + 6);
         display.printWordWrap(tmp, display.width());
-        int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
+        int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 10 - _ct_detail_scroll * 10;
         if (_ct_gps_done) {
           ContactCache* cc = findCache(_ct_path_key);
           display.setColor(DisplayDriver::LIGHT);
@@ -1684,9 +1799,9 @@ public:
             snprintf(tmp, sizeof(tmp), "%.5f, %.5f", cc->gps_lat, cc->gps_lon);
             if (cy >= TOP_BAR_H && cy < display.height())
               display.drawTextEllipsized(0, cy, display.width(), tmp);
-            if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height()) {
+            if (cy + 10 >= TOP_BAR_H && cy + 10 < display.height()) {
               display.setColor(DisplayDriver::GREEN);
-              display.drawTextCentered(display.width() / 2, cy + 11, "ENTER to navigate");
+              display.drawTextCentered(display.width() / 2, cy + 10, "ENTER to navigate");
             }
           } else {
             if (cy >= TOP_BAR_H && cy < display.height())
@@ -1712,7 +1827,7 @@ public:
         snprintf(tmp, sizeof(tmp), "Status: %s", _ct_target_name);
         display.setCursor(0, TOP_BAR_H + 6);
         display.printWordWrap(tmp, display.width());
-        int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
+        int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 10 - _ct_detail_scroll * 10;
         if (_ct_status_done) {
           ContactCache* cc = findCache(_ct_path_key);
           display.setColor(DisplayDriver::LIGHT);
@@ -1726,8 +1841,8 @@ public:
             if (cy >= TOP_BAR_H && cy < display.height())
               display.drawTextEllipsized(0, cy, display.width(), tmp);
             snprintf(tmp, sizeof(tmp), "Power: %umV", cc->batt_mv);
-            if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height())
-              display.drawTextEllipsized(0, cy + 11, display.width(), tmp);
+            if (cy + 10 >= TOP_BAR_H && cy + 10 < display.height())
+              display.drawTextEllipsized(0, cy + 10, display.width(), tmp);
           } else {
             if (cy >= TOP_BAR_H && cy < display.height())
               display.drawTextEllipsized(0, cy, display.width(), "No data");
@@ -1748,7 +1863,7 @@ public:
         snprintf(tmp, sizeof(tmp), "Telemetry: %s", _ct_target_name);
         display.setCursor(0, TOP_BAR_H + 6);
         display.printWordWrap(tmp, display.width());
-        int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
+        int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 10 - _ct_detail_scroll * 10;
         if (_ct_telem_done) {
           ContactCache* cc = findCache(_ct_path_key);
           display.setColor(DisplayDriver::LIGHT);
@@ -1758,8 +1873,8 @@ public:
               display.drawTextEllipsized(0, cy, display.width(), tmp);
             if (cc->temperature > -274) {
               snprintf(tmp, sizeof(tmp), "Temp: %.1fC", cc->temperature);
-              if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height())
-                display.drawTextEllipsized(0, cy + 11, display.width(), tmp);
+              if (cy + 10 >= TOP_BAR_H && cy + 10 < display.height())
+                display.drawTextEllipsized(0, cy + 10, display.width(), tmp);
             }
           } else {
             if (cy >= TOP_BAR_H && cy < display.height())
@@ -1782,7 +1897,7 @@ public:
         snprintf(tmp, sizeof(tmp), "Finding: %s", _ct_target_name);
         display.setCursor(0, TOP_BAR_H + 6);
         display.printWordWrap(tmp, display.width());
-        int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
+        int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 10 - _ct_detail_scroll * 10;
         if (_ct_path_found) {
           ContactCache* cc = findCache(_ct_path_key);
           if (cc && cc->has_path_info) {
@@ -1798,12 +1913,12 @@ public:
                 pos += snprintf(hops + pos, sizeof(hops) - pos, "%s%02X", h > 0 ? " " : "", cc->path[h]);
               }
               display.setColor(DisplayDriver::LIGHT);
-              if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height())
-                display.drawTextEllipsized(0, cy + 11, display.width(), hops);
+              if (cy + 10 >= TOP_BAR_H && cy + 10 < display.height())
+                display.drawTextEllipsized(0, cy + 10, display.width(), hops);
               float snr_f = (float)cc->snr_x4 / 4.0f;
               snprintf(tmp, sizeof(tmp), "RSSI:%d SNR:%.1f", cc->rssi, snr_f);
-              if (cy + 22 >= TOP_BAR_H && cy + 22 < display.height())
-                display.drawTextEllipsized(0, cy + 22, display.width(), tmp);
+              if (cy + 20 >= TOP_BAR_H && cy + 20 < display.height())
+                display.drawTextEllipsized(0, cy + 20, display.width(), tmp);
             } else {
               display.setColor(DisplayDriver::YELLOW);
               if (cy >= TOP_BAR_H && cy < display.height())
@@ -1811,8 +1926,8 @@ public:
               float snr_f = (float)cc->snr_x4 / 4.0f;
               snprintf(tmp, sizeof(tmp), "RSSI:%d SNR:%.1f", cc->rssi, snr_f);
               display.setColor(DisplayDriver::LIGHT);
-              if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height())
-                display.drawTextEllipsized(0, cy + 11, display.width(), tmp);
+              if (cy + 10 >= TOP_BAR_H && cy + 10 < display.height())
+                display.drawTextEllipsized(0, cy + 10, display.width(), tmp);
             }
           } else {
             display.setColor(DisplayDriver::YELLOW);
@@ -1931,8 +2046,8 @@ public:
             _ct_detail_scroll = item_count - 1;
 
           int visible = 4;
-          int y = TOP_BAR_H + 11;
-          for (int i = _ct_detail_scroll; i < _ct_detail_scroll + visible && i < item_count; i++, y += 11) {
+          int y = TOP_BAR_H + 10;
+          for (int i = _ct_detail_scroll; i < _ct_detail_scroll + visible && i < item_count; i++, y += 10) {
             if (item_is_action[i] && i == _ct_action_sel) {
               display.setColor(DisplayDriver::YELLOW);
               display.setCursor(0, y);
@@ -1961,8 +2076,8 @@ public:
           if (scroll_top > _ct_count - visible) scroll_top = _ct_count - visible;
           if (scroll_top < 0) scroll_top = 0;
 
-          int y = TOP_BAR_H + 11;
-          for (int v = scroll_top; v < scroll_top + visible && v < _ct_count; v++, y += 11) {
+          int y = TOP_BAR_H + 10;
+          for (int v = scroll_top; v < scroll_top + visible && v < _ct_count; v++, y += 10) {
             ContactInfo ci;
             if (the_mesh.getContactByIdx(_ct_sorted[v], ci)) {
               if (v == _ct_sel) {
@@ -2045,7 +2160,7 @@ public:
           snprintf(tmp, sizeof(tmp), "Location: %s", _ct_target_name);
           display.setCursor(0, TOP_BAR_H + 6);
           display.printWordWrap(tmp, display.width());
-          int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
+          int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 10 - _ct_detail_scroll * 10;
           if (_ct_gps_done) {
             ContactCache* cc = findCache(_ct_path_key);
             display.setColor(DisplayDriver::LIGHT);
@@ -2053,9 +2168,9 @@ public:
               snprintf(tmp, sizeof(tmp), "%.5f, %.5f", cc->gps_lat, cc->gps_lon);
               if (cy >= TOP_BAR_H && cy < display.height())
                 display.drawTextEllipsized(0, cy, display.width(), tmp);
-              if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height()) {
+              if (cy + 10 >= TOP_BAR_H && cy + 10 < display.height()) {
                 display.setColor(DisplayDriver::GREEN);
-                display.drawTextCentered(display.width() / 2, cy + 11, "ENTER to navigate");
+                display.drawTextCentered(display.width() / 2, cy + 10, "ENTER to navigate");
               }
             } else {
               if (cy >= TOP_BAR_H && cy < display.height())
@@ -2076,7 +2191,7 @@ public:
           snprintf(tmp, sizeof(tmp), "Status: %s", _ct_target_name);
           display.setCursor(0, TOP_BAR_H + 6);
           display.printWordWrap(tmp, display.width());
-          int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
+          int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 10 - _ct_detail_scroll * 10;
           if (_ct_status_done) {
             ContactCache* cc = findCache(_ct_path_key);
             display.setColor(DisplayDriver::LIGHT);
@@ -2088,8 +2203,8 @@ public:
               if (cy >= TOP_BAR_H && cy < display.height())
                 display.drawTextEllipsized(0, cy, display.width(), tmp);
               snprintf(tmp, sizeof(tmp), "Power: %umV", cc->batt_mv);
-              if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height())
-                display.drawTextEllipsized(0, cy + 11, display.width(), tmp);
+              if (cy + 10 >= TOP_BAR_H && cy + 10 < display.height())
+                display.drawTextEllipsized(0, cy + 10, display.width(), tmp);
             } else {
               if (cy >= TOP_BAR_H && cy < display.height())
                 display.drawTextEllipsized(0, cy, display.width(), "No data");
@@ -2105,7 +2220,7 @@ public:
           snprintf(tmp, sizeof(tmp), "Telemetry: %s", _ct_target_name);
           display.setCursor(0, TOP_BAR_H + 6);
           display.printWordWrap(tmp, display.width());
-          int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
+          int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 10 - _ct_detail_scroll * 10;
           if (_ct_telem_done) {
             ContactCache* cc = findCache(_ct_path_key);
             display.setColor(DisplayDriver::LIGHT);
@@ -2115,8 +2230,8 @@ public:
                 display.drawTextEllipsized(0, cy, display.width(), tmp);
               if (cc->temperature > -274) {
                 snprintf(tmp, sizeof(tmp), "Temp: %.1fC", cc->temperature);
-                if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height())
-                  display.drawTextEllipsized(0, cy + 11, display.width(), tmp);
+                if (cy + 10 >= TOP_BAR_H && cy + 10 < display.height())
+                  display.drawTextEllipsized(0, cy + 10, display.width(), tmp);
               }
             } else {
               if (cy >= TOP_BAR_H && cy < display.height())
@@ -2133,7 +2248,7 @@ public:
           snprintf(tmp, sizeof(tmp), "Finding: %s", _ct_target_name);
           display.setCursor(0, TOP_BAR_H + 6);
           display.printWordWrap(tmp, display.width());
-          int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 11 - _ct_detail_scroll * 11;
+          int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 10 - _ct_detail_scroll * 10;
           if (_ct_path_found) {
             ContactCache* cc = findCache(_ct_path_key);
             if (cc && cc->has_path_info) {
@@ -2150,8 +2265,8 @@ public:
               float snr_f = (float)cc->snr_x4 / 4.0f;
               snprintf(tmp, sizeof(tmp), "RSSI:%d SNR:%.1f", cc->rssi, snr_f);
               display.setColor(DisplayDriver::LIGHT);
-              if (cy + 11 >= TOP_BAR_H && cy + 11 < display.height())
-                display.drawTextEllipsized(0, cy + 11, display.width(), tmp);
+              if (cy + 10 >= TOP_BAR_H && cy + 10 < display.height())
+                display.drawTextEllipsized(0, cy + 10, display.width(), tmp);
             } else {
               display.setColor(DisplayDriver::YELLOW);
               if (cy >= TOP_BAR_H && cy < display.height())
@@ -2238,8 +2353,8 @@ public:
           _scan_detail_scroll = item_count - 1;
 
         int visible = 4;
-        int y = TOP_BAR_H + 11;
-        for (int i = _scan_detail_scroll; i < _scan_detail_scroll + visible && i < item_count; i++, y += 11) {
+        int y = TOP_BAR_H + 10;
+        for (int i = _scan_detail_scroll; i < _scan_detail_scroll + visible && i < item_count; i++, y += 10) {
           if (item_is_action[i] && i == _scan_action_sel) {
             display.setColor(DisplayDriver::YELLOW);
             display.setCursor(0, y);
@@ -2280,8 +2395,8 @@ public:
           if (scroll_top > _scan_count - visible) scroll_top = _scan_count - visible;
           if (scroll_top < 0) scroll_top = 0;
 
-          int y = TOP_BAR_H + 11;
-          for (int v = scroll_top; v < scroll_top + visible && v < _scan_count; v++, y += 11) {
+          int y = TOP_BAR_H + 10;
+          for (int v = scroll_top; v < scroll_top + visible && v < _scan_count; v++, y += 10) {
             ScanResult& sr = _scan_results[v];
             if (v == _scan_sel) {
               display.setColor(DisplayDriver::YELLOW);
@@ -2419,8 +2534,8 @@ public:
         if (_pkt_detail_scroll > max_scroll) _pkt_detail_scroll = max_scroll;
 
         // Render detail rows
-        int y = TOP_BAR_H + 11;
-        for (int i = _pkt_detail_scroll; i < _pkt_detail_scroll + detail_visible && i < detail_count; i++, y += 11) {
+        int y = TOP_BAR_H + 10;
+        for (int i = _pkt_detail_scroll; i < _pkt_detail_scroll + detail_visible && i < detail_count; i++, y += 10) {
           display.setColor(DisplayDriver::LIGHT);
           display.setCursor(0, y);
           display.print(detail_items[i]);
@@ -2445,8 +2560,8 @@ public:
           int visible = 4;
           int scroll = 0;
           if (_pkt_sel >= visible) scroll = _pkt_sel - visible + 1;
-          int y = TOP_BAR_H + 11;
-          for (int vi = 0; vi < visible && (scroll + vi) < total; vi++, y += 11) {
+          int y = TOP_BAR_H + 10;
+          for (int vi = 0; vi < visible && (scroll + vi) < total; vi++, y += 10) {
             int item = scroll + vi;
             int idx = (_task->_pkt_log_next - 1 - item + PACKET_LOG_SIZE) % PACKET_LOG_SIZE;
             auto& pkt = _task->_pkt_log[idx];
@@ -2865,7 +2980,7 @@ public:
       int id_gmt_render = sc;
       names[sc] = "GMT offset"; values[sc] = false; is_gmt[sc] = true; sc++;
       names[sc] = "Battery voltage"; values[sc] = _show_voltage; is_gmt[sc] = false; sc++;
-      names[sc] = "SNR/RSSI bar"; values[sc] = _show_snr; is_gmt[sc] = false; sc++;
+      names[sc] = "Signal bars"; values[sc] = _show_snr; is_gmt[sc] = false; sc++;
 #if ENV_INCLUDE_GPS == 1
       names[sc] = "Speed HUD"; values[sc] = _show_speed; is_gmt[sc] = false; sc++;
 #endif
@@ -2880,8 +2995,8 @@ public:
       int scroll = 0;
       if (_settings_sel >= visible) scroll = _settings_sel - visible + 1;
 
-      int y = TOP_BAR_H + 11;
-      for (int i = scroll; i < scroll + visible && i < sc; i++, y += 11) {
+      int y = TOP_BAR_H + 10;
+      for (int i = scroll; i < scroll + visible && i < sc; i++, y += 10) {
         bool selected = (i == _settings_sel);
         display.setColor(selected ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
         if (selected) {
@@ -4151,16 +4266,14 @@ public:
           _task->showAlert(alert, 800);
         } else if (_settings_sel == id_voltage) {
           _show_voltage = !_show_voltage;
-          if (_show_voltage) _show_snr = false;
           _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0);
           the_mesh.savePrefs();
           _task->showAlert(_show_voltage ? "Voltage: ON" : "Voltage: OFF", 800);
         } else if (_settings_sel == id_snr) {
           _show_snr = !_show_snr;
-          if (_show_snr) _show_voltage = false;
           _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0);
           the_mesh.savePrefs();
-          _task->showAlert(_show_snr ? "SNR: ON" : "SNR: OFF", 800);
+          _task->showAlert(_show_snr ? "Signal: ON" : "Signal: OFF", 800);
         }
 #if ENV_INCLUDE_GPS == 1
         else if (_settings_sel == id_speed) {
@@ -4611,7 +4724,7 @@ public:
 
       int y = 30;
       ContactInfo ci;
-      for (int i = scroll_top; i < scroll_top + visible && i < _num_filtered; i++, y += 11) {
+      for (int i = scroll_top; i < scroll_top + visible && i < _num_filtered; i++, y += 10) {
         if (i == _contact_sel) {
           display.setColor(DisplayDriver::YELLOW);
           display.setCursor(0, y);
@@ -4700,7 +4813,7 @@ public:
       if (scroll_top < 0) scroll_top = 0;
 
       int y = 30;
-      for (int i = scroll_top; i < scroll_top + visible && i < _num_channels; i++, y += 11) {
+      for (int i = scroll_top; i < scroll_top + visible && i < _num_channels; i++, y += 10) {
         if (i == _channel_sel) {
           display.setColor(DisplayDriver::YELLOW);
           display.setCursor(0, y);

@@ -120,3 +120,8 @@ static const uint8_t advert_icon[] = {
 static const uint8_t muted_icon[] = {
   0x20, 0x6a, 0xea, 0xe4, 0xe4, 0xea, 0x6a, 0x20
 };
+
+// 7x5 envelope icon for unread messages
+static const uint8_t envelope_icon[] = {
+  0x7F, 0x63, 0x55, 0x49, 0x7F
+};
