@@ -158,6 +158,14 @@ public:
   bool isButtonPressed() const;
 
   void extendAutoOff();
+  bool isBuzzerQuiet() {
+#ifdef PIN_BUZZER
+    return buzzer.isQuiet();
+#else
+    return true;
+#endif
+  }
+
   void toggleBuzzer();
   bool getGPSState();
   void toggleGPS();
