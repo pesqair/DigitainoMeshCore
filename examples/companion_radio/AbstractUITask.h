@@ -52,6 +52,36 @@ public:
   unsigned long _last_rx_time = 0;
   int16_t _last_rx_rssi = 0;
   int8_t _last_rx_snr_x4 = 0;
+
+  // TX signal cycling state (for status bar)
+  #define TX_SIGNAL_MAX 8
+  struct TxSignalEntry {
+    uint8_t id;       // 1-byte repeater hash
+    int8_t snr_x4;    // SNR * 4
+  };
+  TxSignalEntry _tx_signals[TX_SIGNAL_MAX];
+  uint8_t _tx_signal_count = 0;
+  uint8_t _tx_signal_cycle = 0;        // current display index
+  unsigned long _tx_signal_time = 0;    // when data was last updated
+  unsigned long _tx_cycle_time = 0;     // when to advance cycle
+
+  // Auto-ping queue (ping heard repeaters to get accurate snr_there)
+  #define AUTO_PING_QUEUE_MAX 4
+  uint8_t _auto_ping_queue[AUTO_PING_QUEUE_MAX];  // 1-byte repeater hashes
+  uint8_t _auto_ping_queue_count = 0;
+  uint8_t _auto_ping_next = 0;         // next index to ping
+  bool _auto_ping_pending = false;      // waiting for response
+  unsigned long _auto_ping_timeout = 0; // response timeout
+  uint8_t _auto_ping_current_id = 0;    // hash of repeater being pinged
+  unsigned long _auto_ping_next_time = 0; // when to send next ping
+
+  // RX signal cycling state (from heard retransmissions)
+  TxSignalEntry _rx_signals[TX_SIGNAL_MAX];
+  uint8_t _rx_signal_count = 0;
+  uint8_t _rx_signal_cycle = 0;
+  unsigned long _rx_signal_time = 0;
+  unsigned long _rx_cycle_time = 0;
+
   virtual void onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature, float gps_lat = 0, float gps_lon = 0) { }
   virtual void onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, uint16_t batt_mv) { }
   virtual void onPingResponse(uint32_t latency_ms, float snr_there, float snr_back) { }

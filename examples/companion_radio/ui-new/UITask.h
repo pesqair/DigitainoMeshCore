@@ -37,6 +37,7 @@ class UITask : public AbstractUITask {
   char _alert[80];
   unsigned long _alert_expiry;
   int _msgcount;
+  int _unread_ui = 0;  // UI-only unread counter, cleared when Messages page is viewed
   unsigned long ui_started_at, next_batt_chck;
   int next_backlight_btn_check = 0;
 #ifdef PIN_STATUS_LED
@@ -154,7 +155,8 @@ public:
   void onPingResponse(uint32_t latency_ms, float snr_there, float snr_back) override;
   void onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, uint8_t path_len, const uint8_t* pub_key, uint8_t pub_key_len) override;
   void showAlert(const char* text, int duration_millis);
-  int  getMsgCount() const { return _msgcount; }
+  int  getMsgCount() const { return _unread_ui; }
+  void clearUnread() { _unread_ui = 0; }
   bool hasDisplay() const { return _display != NULL; }
   bool isButtonPressed() const;
 

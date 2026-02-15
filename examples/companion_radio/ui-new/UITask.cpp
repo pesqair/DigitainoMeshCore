@@ -590,57 +590,144 @@ class HomeScreen : public UIScreen {
     }
 #endif
 
-    // 3. Signal bars + repeater hex (when _show_snr is ON)
+    // 3. Signal bars (when _show_snr is ON)
+    // Layout (right-to-left): [bat] BB[BARS]R | AA[BARS]T
+    // Visual (left-to-right):  T[BARS]AA | R[BARS]BB [bat]
     if (_show_snr) {
-      // Determine signal level (0-4 bars) from last received packet SNR
-      // Algorithm matches PocketMesh iOS: pure SNR thresholds
-      int bars = 0;
-      bool has_signal = false;
-      if (_task->_last_rx_time > 0) {
-        unsigned long age_s = (millis() - _task->_last_rx_time) / 1000;
-        if (age_s < 300) {  // within 5 minutes
-          has_signal = true;
+      int bars_w = 11;
+      int bars_y = 3;
+
+      // --- Compute RX signal data ---
+      // Use cycling retransmission data OR latest single packet (whichever is newer)
+      int rx_bars = 0;
+      bool has_rx = false;
+      uint8_t rx_id = 0;
+      bool use_cycling = _task->_rx_signal_count > 0 &&
+                         (millis() - _task->_rx_signal_time) / 1000 < 300;
+      bool use_live = _task->_last_rx_time > 0 &&
+                      (millis() - _task->_last_rx_time) / 1000 < 300;
+      if (use_cycling && use_live && _task->_last_rx_time > _task->_rx_signal_time) {
+        use_cycling = false;  // live packet is newer
+      }
+      if (use_cycling) {
+        has_rx = true;
+        _needs_fast_refresh = true;
+        if (_task->_rx_signal_count > 1 && millis() - _task->_rx_cycle_time > 2000) {
+          _task->_rx_signal_cycle = (_task->_rx_signal_cycle + 1) % _task->_rx_signal_count;
+          _task->_rx_cycle_time = millis();
+        }
+        auto& rxe = _task->_rx_signals[_task->_rx_signal_cycle];
+        rx_id = rxe.id;
+        float snr = (float)rxe.snr_x4 / 4.0f;
+        if (snr > 10) rx_bars = 4;
+        else if (snr > 5) rx_bars = 3;
+        else if (snr > 0) rx_bars = 2;
+        else if (snr > -10) rx_bars = 1;
+      } else if (use_live) {
+        has_rx = true;
+        _needs_fast_refresh = true;
+        rx_id = _task->_last_rx_id;
+        float snr = (float)_task->_last_rx_snr_x4 / 4.0f;
+        if (snr > 10) rx_bars = 4;
+        else if (snr > 5) rx_bars = 3;
+        else if (snr > 0) rx_bars = 2;
+        else if (snr > -10) rx_bars = 1;
+      }
+
+      // --- Compute TX signal data ---
+      bool has_tx = false;
+      int tx_bars = 0;
+      uint8_t tx_id = 0;
+      if (_task->_tx_signal_count > 0) {
+        unsigned long tx_age = (millis() - _task->_tx_signal_time) / 1000;
+        if (tx_age < 300) {
+          has_tx = true;
           _needs_fast_refresh = true;
-          // Use stored SNR from reception time (not radio_driver which may have changed)
-          float snr = (float)_task->_last_rx_snr_x4 / 4.0f;
-          if (snr > 10) bars = 4;
-          else if (snr > 5) bars = 3;
-          else if (snr > 0) bars = 2;
-          else if (snr > -10) bars = 1;
-          // else bars = 0
+          if (_task->_tx_signal_count > 1 && millis() - _task->_tx_cycle_time > 2000) {
+            _task->_tx_signal_cycle = (_task->_tx_signal_cycle + 1) % _task->_tx_signal_count;
+            _task->_tx_cycle_time = millis();
+          }
+          auto& txe = _task->_tx_signals[_task->_tx_signal_cycle];
+          tx_id = txe.id;
+          float tx_snr = (float)txe.snr_x4 / 4.0f;
+          if (tx_snr > 10) tx_bars = 4;
+          else if (tx_snr > 5) tx_bars = 3;
+          else if (tx_snr > 0) tx_bars = 2;
+          else if (tx_snr > -10) tx_bars = 1;
         }
       }
-      // Draw 4 bars (11px wide x 10px tall area)
-      int bars_w = 11;
+
+      // --- Draw right-to-left: RX hex, RX bars, "R", separator, TX hex, TX bars, "T" ---
+
+      // RX hex ID
+      if (has_rx && rx_id != 0) {
+        char hex_id[4];
+        snprintf(hex_id, sizeof(hex_id), "%02X", rx_id);
+        right_x -= 12;
+        display.setColor(DisplayDriver::LIGHT);
+        display.setCursor(right_x, 3);
+        display.print(hex_id);
+      }
+
+      // RX bars
       right_x -= bars_w;
       int bars_x = right_x;
-      int bars_y = 3;
       for (int b = 0; b < 4; b++) {
-        int bh = 3 + b * 2;  // heights: 3, 5, 7, 9
+        int bh = 3 + b * 2;
         int bx = bars_x + b * 3;
         int by = bars_y + (10 - bh);
-        if (b < bars) {
+        if (b < rx_bars) {
           display.setColor(DisplayDriver::GREEN);
           display.fillRect(bx, by, 2, bh);
         } else {
-          // On monochrome, drawRect w=2 looks same as fillRect
-          // Draw just a 1px baseline tick for unfilled bars
           display.setColor(DisplayDriver::GREEN);
           display.fillRect(bx, bars_y + 9, 2, 1);
         }
       }
-      right_x -= 1;
-      // Show repeater hex ID next to signal bars
-      if (has_signal && _task->_last_rx_id != 0) {
-        char hex_id[4];
-        snprintf(hex_id, sizeof(hex_id), "%02X", _task->_last_rx_id);
-        int hw = 2 * 6;  // 2 chars * 6px
-        right_x -= hw;
-        display.setColor(DisplayDriver::LIGHT);
+
+      // "R" label
+      right_x -= 6;
+      display.setColor(DisplayDriver::LIGHT);
+      display.setCursor(right_x, 3);
+      display.print("R");
+
+      // TX section (only when data exists)
+      if (has_tx) {
+        // "|" separator
+        right_x -= 6;
         display.setCursor(right_x, 3);
-        display.print(hex_id);
-        right_x -= 1;
+        display.print("|");
+
+        // TX hex ID
+        char tx_hex[4];
+        snprintf(tx_hex, sizeof(tx_hex), "%02X", tx_id);
+        right_x -= 12;
+        display.setCursor(right_x, 3);
+        display.print(tx_hex);
+
+        // TX bars
+        right_x -= bars_w;
+        bars_x = right_x;
+        for (int b = 0; b < 4; b++) {
+          int bh = 3 + b * 2;
+          int bx = bars_x + b * 3;
+          int by = bars_y + (10 - bh);
+          if (b < tx_bars) {
+            display.setColor(DisplayDriver::GREEN);
+            display.fillRect(bx, by, 2, bh);
+          } else {
+            display.setColor(DisplayDriver::GREEN);
+            display.fillRect(bx, bars_y + 9, 2, 1);
+          }
+        }
+
+        // "T" label
+        right_x -= 6;
+        display.setCursor(right_x, 3);
+        display.print("T");
       }
+
+      right_x -= 1;
     }
 
     // === CENTER: HH:MM clock ===
@@ -1394,6 +1481,9 @@ public:
         rebuildMsgFilters();
         int filtered_total = countFilteredMsgs();
         if (_msg_sel >= filtered_total && filtered_total > 0) _msg_sel = filtered_total - 1;
+
+        // Clear UI unread counter when viewing messages
+        if (filtered_total > 0) _task->clearUnread();
 
         display.setColor(DisplayDriver::YELLOW);
         char hdr[40];
@@ -5151,6 +5241,7 @@ void UITask::msgRead(int msgcount) {
 
 void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount, int channel_idx, const uint8_t* path) {
   _msgcount = msgcount;
+  _unread_ui++;
 
   // For DMs (path_len=0xFF), from_name is the contact name
   // For channel msgs (channel_idx>=0), from_name is the channel name
@@ -5185,7 +5276,7 @@ void UITask::userLedHandler() {
   if (cur_time > next_led_change) {
     if (led_state == 0) {
       led_state = 1;
-      if (_msgcount > 0) {
+      if (_unread_ui > 0) {
         last_led_increment = LED_ON_MSG_MILLIS;
       } else {
         last_led_increment = LED_ON_MILLIS;
@@ -5403,6 +5494,16 @@ void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uin
   memset(entry.repeat_path_rssi, 0, sizeof(entry.repeat_path_rssi));
   memset(entry.repeat_path_snr_x4, 0, sizeof(entry.repeat_path_snr_x4));
   entry.tx_count = 1;
+  // Clear signal displays and auto-ping queue for new message tracking
+  if (is_sent) {
+    _tx_signal_count = 0;
+    _tx_signal_cycle = 0;
+    _rx_signal_count = 0;
+    _rx_signal_cycle = 0;
+    _auto_ping_queue_count = 0;
+    _auto_ping_next = 0;
+    _auto_ping_pending = false;
+  }
   entry.expected_ack = expected_ack;
   entry.delivered = false;
 
@@ -5494,6 +5595,36 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
           }
         }
       }
+      // Update RX signal cycling display with all heard repeaters
+      _rx_signal_count = 0;
+      for (int r = 0; r < entry.repeat_path_len && _rx_signal_count < TX_SIGNAL_MAX; r++) {
+        if (entry.repeat_path_snr_x4[r] != 0) {
+          _rx_signals[_rx_signal_count].id = entry.repeat_path[r];
+          _rx_signals[_rx_signal_count].snr_x4 = entry.repeat_path_snr_x4[r];
+          _rx_signal_count++;
+        }
+      }
+      if (_rx_signal_count > 0) {
+        _rx_signal_time = millis();
+        _rx_signal_cycle = 0;
+        _rx_cycle_time = millis();
+      }
+      // Add heard repeaters to auto-ping queue (accumulate, don't reset in-flight pings)
+      bool was_empty = (_auto_ping_queue_count == 0);
+      for (int r = 0; r < entry.repeat_path_len && _auto_ping_queue_count < AUTO_PING_QUEUE_MAX; r++) {
+        if (entry.repeat_path_snr_x4[r] != 0) {
+          bool dup = false;
+          for (int q = 0; q < _auto_ping_queue_count; q++) {
+            if (_auto_ping_queue[q] == entry.repeat_path[r]) { dup = true; break; }
+          }
+          if (!dup) {
+            _auto_ping_queue[_auto_ping_queue_count++] = entry.repeat_path[r];
+          }
+        }
+      }
+      if (was_empty && _auto_ping_queue_count > 0) {
+        _auto_ping_next_time = millis() + 500;  // start pinging after brief delay
+      }
       break;
     }
   }
@@ -5566,12 +5697,38 @@ void UITask::onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, 
 void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back) {
   if (!home) return;
   HomeScreen* hs = (HomeScreen*)home;
+
+  // Handle auto-ping response
+  if (_auto_ping_pending) {
+    _auto_ping_pending = false;
+    // Append to TX buffer
+    if (_tx_signal_count < TX_SIGNAL_MAX) {
+      _tx_signals[_tx_signal_count].id = _auto_ping_current_id;
+      _tx_signals[_tx_signal_count].snr_x4 = (int8_t)(snr_there * 4);
+      _tx_signal_count++;
+      _tx_signal_time = millis();
+      _tx_cycle_time = millis();
+    }
+    _auto_ping_next++;
+    _auto_ping_next_time = millis() + 1000;  // 1s delay before next
+    return;
+  }
+
+  // Handle user-initiated ping
   if (!hs->_ct_ping_pending) return;
   hs->_ct_ping_done = true;
   hs->_ct_ping_pending = false;
   hs->_ct_ping_latency = latency_ms;
   hs->_ct_ping_snr_there = snr_there;
   hs->_ct_ping_snr_back = snr_back;
+
+  // Update TX signal with accurate snr_there
+  _tx_signals[0].id = hs->_ct_path_key[0];
+  _tx_signals[0].snr_x4 = (int8_t)(snr_there * 4);
+  _tx_signal_count = 1;
+  _tx_signal_time = millis();
+  _tx_signal_cycle = 0;
+  _tx_cycle_time = millis();
 }
 
 void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, uint8_t path_len, const uint8_t* pub_key, uint8_t pub_key_len) {
@@ -5735,6 +5892,41 @@ void UITask::loop() {
   }
 
   userLedHandler();
+
+  // Process auto-ping queue
+  if (_auto_ping_queue_count > 0 && !_auto_ping_pending &&
+      _auto_ping_next < _auto_ping_queue_count &&
+      millis() >= _auto_ping_next_time) {
+    HomeScreen* hs = home ? (HomeScreen*)home : nullptr;
+    bool user_ping_active = hs && hs->_ct_ping_pending;
+
+    if (!user_ping_active) {
+      uint8_t hash = _auto_ping_queue[_auto_ping_next];
+      ContactInfo* ci = the_mesh.lookupContactByPubKey(&hash, 1);
+      if (ci) {
+        uint32_t est_timeout;
+        int result = the_mesh.sendPing(*ci, est_timeout);
+        if (result != MSG_SEND_FAILED) {
+          _auto_ping_pending = true;
+          _auto_ping_current_id = hash;
+          _auto_ping_timeout = millis() + est_timeout + 2000;
+        } else {
+          _auto_ping_next++;
+          _auto_ping_next_time = millis() + 1000;
+        }
+      } else {
+        _auto_ping_next++;  // repeater not in contacts, skip
+        _auto_ping_next_time = millis() + 500;
+      }
+    }
+  }
+
+  // Auto-ping timeout
+  if (_auto_ping_pending && millis() > _auto_ping_timeout) {
+    _auto_ping_pending = false;
+    _auto_ping_next++;
+    _auto_ping_next_time = millis() + 1000;
+  }
 
 #ifdef PIN_BUZZER
   if (buzzer.isPlaying())  buzzer.loop();
