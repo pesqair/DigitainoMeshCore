@@ -335,6 +335,13 @@ class HomeScreen : public UIScreen {
   bool _ct_status_pending;
   unsigned long _ct_status_timeout;
   bool _ct_status_done;
+  // Ping sub-state
+  bool _ct_ping_pending;
+  unsigned long _ct_ping_timeout;
+  bool _ct_ping_done;
+  uint32_t _ct_ping_latency;
+  float _ct_ping_snr_there;
+  float _ct_ping_snr_back;
   // GPS request sub-state
   bool _ct_gps_pending;
   unsigned long _ct_gps_timeout;
@@ -767,6 +774,7 @@ public:
        _ct_path_pending(false), _ct_path_found(false),
        _ct_telem_pending(false), _ct_telem_done(false),
        _ct_status_pending(false), _ct_status_done(false),
+       _ct_ping_pending(false), _ct_ping_done(false),
        _ct_gps_pending(false), _ct_gps_done(false), _ct_gps_no_fix(false),
        _scan_count(0), _scan_active(false), _scan_timeout(0), _scan_tag(0),
        _scan_sel(0), _scan_action(false), _scan_action_sel(0), _scan_action_count(0), _scan_detail_scroll(0),
@@ -775,6 +783,7 @@ public:
   bool isUserBusy() const {
     return _page_active || _msg_detail || _msg_compose_menu || _msg_target_menu || _pkt_detail || _ct_action || _ct_path_pending || _ct_telem_pending ||
            _ct_telem_done || _ct_status_pending || _ct_status_done ||
+           _ct_ping_pending || _ct_ping_done ||
            _ct_gps_pending || _ct_gps_done || _ct_gps_no_fix ||
            _preset_target_choosing || _preset_edit_mode || _scan_action;
   }
@@ -1862,6 +1871,34 @@ public:
             _task->showAlert("Location timeout", 1200);
           }
         }
+      } else if (_ct_ping_pending || _ct_ping_done) {
+        display.setColor(DisplayDriver::YELLOW);
+        snprintf(tmp, sizeof(tmp), "Ping: %s", _ct_target_name);
+        display.setCursor(0, TOP_BAR_H + 6);
+        display.printWordWrap(tmp, display.width());
+        int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 10 - _ct_detail_scroll * 10;
+        if (_ct_ping_done) {
+          display.setColor(DisplayDriver::GREEN);
+          snprintf(tmp, sizeof(tmp), "RTT: %lums", (unsigned long)_ct_ping_latency);
+          if (cy >= TOP_BAR_H && cy < display.height())
+            display.drawTextEllipsized(0, cy, display.width(), tmp);
+          snprintf(tmp, sizeof(tmp), "SNR there: %.1fdB", _ct_ping_snr_there);
+          if (cy + 10 >= TOP_BAR_H && cy + 10 < display.height())
+            display.drawTextEllipsized(0, cy + 10, display.width(), tmp);
+          snprintf(tmp, sizeof(tmp), "SNR back: %.1fdB", _ct_ping_snr_back);
+          if (cy + 20 >= TOP_BAR_H && cy + 20 < display.height())
+            display.drawTextEllipsized(0, cy + 20, display.width(), tmp);
+        } else {
+          display.setColor(DisplayDriver::LIGHT);
+          if (cy >= TOP_BAR_H && cy < display.height())
+            display.drawTextCentered(display.width() / 2, cy, "Pinging...");
+          if (millis() > _ct_ping_timeout) {
+            _ct_ping_pending = false;
+            reselectContact(_ct_target_name);
+            _ct_action = true;
+            _task->showAlert("Ping timeout", 1200);
+          }
+        }
       } else if (_ct_status_pending || _ct_status_done) {
         display.setColor(DisplayDriver::YELLOW);
         snprintf(tmp, sizeof(tmp), "Status: %s", _ct_target_name);
@@ -2008,10 +2045,14 @@ public:
             items[item_count] = "Send GPS"; item_is_action[item_count++] = true;
             items[item_count] = "Req Location"; item_is_action[item_count++] = true;
 #endif
-          } else {
+          } else if (ci.type == ADV_TYPE_REPEATER) {
+            items[item_count] = "Ping"; item_is_action[item_count++] = true;
             items[item_count] = "Find Path"; item_is_action[item_count++] = true;
             items[item_count] = "Telemetry"; item_is_action[item_count++] = true;
             items[item_count] = "Status"; item_is_action[item_count++] = true;
+          } else {
+            items[item_count] = "Find Path"; item_is_action[item_count++] = true;
+            items[item_count] = "Telemetry"; item_is_action[item_count++] = true;
           }
 #if ENV_INCLUDE_GPS == 1
           {
@@ -2193,6 +2234,7 @@ public:
       if (_ct_path_pending || _ct_path_found ||
           _ct_telem_pending || _ct_telem_done ||
           _ct_status_pending || _ct_status_done ||
+          _ct_ping_pending || _ct_ping_done ||
           _ct_gps_pending || _ct_gps_done || _ct_gps_no_fix) {
         // Render pending sub-states (same as contacts page)
         if (_ct_gps_pending || _ct_gps_done || _ct_gps_no_fix) {
@@ -2225,6 +2267,29 @@ public:
             if (cy >= TOP_BAR_H && cy < display.height())
               display.drawTextCentered(display.width() / 2, cy, "Requesting...");
             if (millis() > _ct_gps_timeout) { _ct_gps_pending = false; _scan_action = true; _task->showAlert("Location timeout", 1200); }
+          }
+        } else if (_ct_ping_pending || _ct_ping_done) {
+          display.setColor(DisplayDriver::YELLOW);
+          snprintf(tmp, sizeof(tmp), "Ping: %s", _ct_target_name);
+          display.setCursor(0, TOP_BAR_H + 6);
+          display.printWordWrap(tmp, display.width());
+          int cy = TOP_BAR_H + 6 + getTextLines(display, tmp, display.width()) * 10 - _ct_detail_scroll * 10;
+          if (_ct_ping_done) {
+            display.setColor(DisplayDriver::GREEN);
+            snprintf(tmp, sizeof(tmp), "RTT: %lums", (unsigned long)_ct_ping_latency);
+            if (cy >= TOP_BAR_H && cy < display.height())
+              display.drawTextEllipsized(0, cy, display.width(), tmp);
+            snprintf(tmp, sizeof(tmp), "SNR there: %.1fdB", _ct_ping_snr_there);
+            if (cy + 10 >= TOP_BAR_H && cy + 10 < display.height())
+              display.drawTextEllipsized(0, cy + 10, display.width(), tmp);
+            snprintf(tmp, sizeof(tmp), "SNR back: %.1fdB", _ct_ping_snr_back);
+            if (cy + 20 >= TOP_BAR_H && cy + 20 < display.height())
+              display.drawTextEllipsized(0, cy + 20, display.width(), tmp);
+          } else {
+            display.setColor(DisplayDriver::LIGHT);
+            if (cy >= TOP_BAR_H && cy < display.height())
+              display.drawTextCentered(display.width() / 2, cy, "Pinging...");
+            if (millis() > _ct_ping_timeout) { _ct_ping_pending = false; _scan_action = true; _task->showAlert("Ping timeout", 1200); }
           }
         } else if (_ct_status_pending || _ct_status_done) {
           display.setColor(DisplayDriver::YELLOW);
@@ -2332,6 +2397,9 @@ public:
         int item_count = 0;
 
         if (sr.in_contacts) {
+          if (sr.node_type == ADV_TYPE_REPEATER) {
+            items[item_count] = "Ping"; item_is_action[item_count++] = true;
+          }
           items[item_count] = "Find Path"; item_is_action[item_count++] = true;
           items[item_count] = "Telemetry"; item_is_action[item_count++] = true;
           if (sr.node_type == ADV_TYPE_REPEATER) {
@@ -3123,6 +3191,21 @@ public:
         }
         return true;
       }
+      if (_ct_ping_pending || _ct_ping_done) {
+        if (c == KEY_CANCEL || c == KEY_ENTER) {
+          _ct_ping_pending = false;
+          _ct_ping_done = false;
+          _ct_detail_scroll = 0;
+          reselectContact(_ct_target_name);
+          _ct_action = true;  // return to contact card
+          return true;
+        }
+        if (_ct_ping_done) {
+          if (c == KEY_UP && _ct_detail_scroll > 0) { _ct_detail_scroll--; return true; }
+          if (c == KEY_DOWN && _ct_detail_scroll < 3) { _ct_detail_scroll++; return true; }
+        }
+        return true;
+      }
       if (_ct_status_pending || _ct_status_done) {
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_status_pending = false;
@@ -3217,6 +3300,7 @@ public:
               actions[act_count++] = "Req Location";
 #endif
             } else if (ci.type == ADV_TYPE_REPEATER) {
+              actions[act_count++] = "Ping";
               actions[act_count++] = "Find Path";
               actions[act_count++] = "Telemetry";
               actions[act_count++] = "Status";
@@ -3235,7 +3319,22 @@ public:
             }
 #endif
             const char* chosen = actions[_ct_action_sel];
-            if (strcmp(chosen, "Send DM") == 0) {
+            if (strcmp(chosen, "Ping") == 0) {
+              uint32_t est_timeout;
+              int result = the_mesh.sendPing(ci, est_timeout);
+              if (result != MSG_SEND_FAILED) {
+                _ct_action = false;
+                _ct_ping_pending = true;
+                _ct_ping_done = false;
+                _ct_detail_scroll = 0;
+                _ct_ping_timeout = millis() + est_timeout + 2000;
+                strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
+                _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
+                memcpy(_ct_path_key, ci.id.pub_key, PUB_KEY_SIZE);
+              } else {
+                _task->showAlert("Send failed", 800);
+              }
+            } else if (strcmp(chosen, "Send DM") == 0) {
               _ct_action = false;
               _task->startDMCompose(ci);
             } else if (strcmp(chosen, "Find Path") == 0) {
@@ -3408,6 +3507,9 @@ public:
           if (sr.in_contacts && getContactByKey(sr.pub_key, ci)) {
             const char* actions[6];
             uint8_t act_count = 0;
+            if (sr.node_type == ADV_TYPE_REPEATER) {
+              actions[act_count++] = "Ping";
+            }
             actions[act_count++] = "Find Path";
             actions[act_count++] = "Telemetry";
             if (sr.node_type == ADV_TYPE_REPEATER) {
@@ -3423,7 +3525,22 @@ public:
             }
 #endif
             const char* chosen = actions[_scan_action_sel];
-            if (strcmp(chosen, "Find Path") == 0) {
+            if (strcmp(chosen, "Ping") == 0) {
+              uint32_t est_timeout;
+              int result = the_mesh.sendPing(ci, est_timeout);
+              if (result != MSG_SEND_FAILED) {
+                _scan_action = false;
+                _ct_ping_pending = true;
+                _ct_ping_done = false;
+                _ct_detail_scroll = 0;
+                _ct_ping_timeout = millis() + est_timeout + 2000;
+                strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
+                _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
+                memcpy(_ct_path_key, ci.id.pub_key, PUB_KEY_SIZE);
+              } else {
+                _task->showAlert("Send failed", 800);
+              }
+            } else if (strcmp(chosen, "Find Path") == 0) {
               uint32_t est_timeout;
               int result = the_mesh.sendPathFind(ci, est_timeout);
               if (result != MSG_SEND_FAILED) {
@@ -3514,6 +3631,19 @@ public:
         }
 #endif
         if (_ct_gps_done) {
+          if (c == KEY_UP && _ct_detail_scroll > 0) { _ct_detail_scroll--; return true; }
+          if (c == KEY_DOWN && _ct_detail_scroll < 3) { _ct_detail_scroll++; return true; }
+        }
+        return true;
+      }
+      if (_ct_ping_pending || _ct_ping_done) {
+        if (c == KEY_CANCEL || c == KEY_ENTER) {
+          _ct_ping_pending = false; _ct_ping_done = false;
+          _ct_detail_scroll = 0;
+          _scan_action = true;
+          return true;
+        }
+        if (_ct_ping_done) {
           if (c == KEY_UP && _ct_detail_scroll > 0) { _ct_detail_scroll--; return true; }
           if (c == KEY_DOWN && _ct_detail_scroll < 3) { _ct_detail_scroll++; return true; }
         }
@@ -5431,6 +5561,17 @@ void UITask::onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, 
   if (!hs->_ct_status_pending) return;
   hs->_ct_status_done = true;
   hs->_ct_status_pending = false;
+}
+
+void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back) {
+  if (!home) return;
+  HomeScreen* hs = (HomeScreen*)home;
+  if (!hs->_ct_ping_pending) return;
+  hs->_ct_ping_done = true;
+  hs->_ct_ping_pending = false;
+  hs->_ct_ping_latency = latency_ms;
+  hs->_ct_ping_snr_there = snr_there;
+  hs->_ct_ping_snr_back = snr_back;
 }
 
 void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, uint8_t path_len, const uint8_t* pub_key, uint8_t pub_key_len) {

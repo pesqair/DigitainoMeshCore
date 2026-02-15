@@ -151,6 +151,7 @@ public:
   void onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_x4) override;
   void onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature, float gps_lat = 0, float gps_lon = 0) override;
   void onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, uint16_t batt_mv) override;
+  void onPingResponse(uint32_t latency_ms, float snr_there, float snr_back) override;
   void onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, uint8_t path_len, const uint8_t* pub_key, uint8_t pub_key_len) override;
   void showAlert(const char* text, int duration_millis);
   int  getMsgCount() const { return _msgcount; }

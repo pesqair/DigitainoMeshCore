@@ -302,6 +302,20 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 
     // Compute hash the same way as Packet::calculatePacketHash
     uint8_t payload_type = (header >> PH_TYPE_SHIFT) & PH_TYPE_MASK;
+
+    // Detect ping (trace) response
+    if (payload_type == PAYLOAD_TYPE_TRACE && ui_pending_ping_tag != 0 && payload_len >= 9) {
+      uint32_t rx_tag;
+      memcpy(&rx_tag, &raw[i], 4);  // tag is first 4 bytes of trace payload
+      if (rx_tag == ui_pending_ping_tag) {
+        ui_pending_ping_tag = 0;
+        uint32_t latency_ms = millis() - ui_pending_ping_start;
+        float snr_there = (plen > 0) ? ((int8_t)path[0]) / 4.0f : 0;
+        float snr_back = snr;
+        _ui->onPingResponse(latency_ms, snr_there, snr_back);
+      }
+    }
+
     SHA256 sha;
     sha.update(&payload_type, 1);
     if (payload_type == PAYLOAD_TYPE_TRACE) {
@@ -443,6 +457,22 @@ int MyMesh::sendStatusReq(const ContactInfo& contact, uint32_t& est_timeout) {
     memcpy(&ui_pending_status, contact.id.pub_key, 4);  // match by pub_key prefix (same as legacy)
   }
   return result;
+}
+
+int MyMesh::sendPing(const ContactInfo& contact, uint32_t& est_timeout) {
+  uint32_t tag = getRTCClock()->getCurrentTimeUnique();
+  uint32_t auth = 0;
+  uint8_t flags = 0;  // path_sz = 0 (1-byte hashes)
+  auto pkt = createTrace(tag, auth, flags);
+  if (!pkt) return MSG_SEND_FAILED;
+  uint8_t path[6];
+  memcpy(path, contact.id.pub_key, 6);
+  sendDirect(pkt, path, 6);
+  uint32_t t = _radio->getEstAirtimeFor(pkt->payload_len + pkt->path_len + 2);
+  est_timeout = calcDirectTimeoutMillisFor(t, 6);
+  ui_pending_ping_tag = tag;
+  ui_pending_ping_start = millis();
+  return 0;
 }
 
 void MyMesh::startDiscoveryScan(uint32_t tag) {
@@ -1018,6 +1048,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   offline_queue_len = 0;
   app_target_ver = 0;
   clearPendingReqs();
+  ui_pending_ping_start = 0;
   next_ack_idx = 0;
   sign_data = NULL;
   dirty_contacts_expiry = 0;

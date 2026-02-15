@@ -45,10 +45,13 @@ Each contact shows hash prefix (`<XX>`), name, type suffix (`[D]`irect, `[N]` ho
 
 **Contact Actions** (ENTER on a contact):
 - **Chat nodes**: Send DM, Find Path, Telemetry, Send GPS, Request Location, Navigate
-- **Repeaters/Sensors**: Find Path, Telemetry, Status, Navigate (if GPS available)
+- **Repeaters**: Ping, Find Path, Telemetry, Status, Navigate (if GPS available)
+- **Sensors**: Find Path, Telemetry, Navigate (if GPS available)
 - Cached info displayed below actions: last heard, path/signal, battery, temperature, uptime
 
-All async operations (path discovery, telemetry, status, location requests) show a waiting state with timeout.
+**Ping Repeater**: Sends a trace packet to a repeater and measures round-trip time (ms), SNR "there" (how well the repeater heard us), and SNR "back" (how well we heard the repeater). Available for repeater-type contacts in both Contacts and Nearby views.
+
+All async operations (path discovery, telemetry, status, ping, location requests) show a waiting state with timeout.
 
 ### Nearby
 
