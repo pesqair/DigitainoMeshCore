@@ -1652,6 +1652,8 @@ public:
           display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Requesting...");
           if (millis() > _ct_gps_timeout) {
             _ct_gps_pending = false;
+            reselectContact(_ct_target_name);
+            _ct_action = true;
             _task->showAlert("Location timeout", 1200);
           }
         }
@@ -1683,6 +1685,8 @@ public:
           display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Waiting...");
           if (millis() > _ct_status_timeout) {
             _ct_status_pending = false;
+            reselectContact(_ct_target_name);
+            _ct_action = true;
             _task->showAlert("Status timeout", 1200);
           }
         }
@@ -1712,6 +1716,8 @@ public:
           display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Waiting...");
           if (millis() > _ct_telem_timeout) {
             _ct_telem_pending = false;
+            reselectContact(_ct_target_name);
+            _ct_action = true;
             _task->showAlert("Telem timeout", 1200);
           }
         }
@@ -1752,6 +1758,8 @@ public:
           display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Searching...");
           if (millis() > _ct_path_timeout) {
             _ct_path_pending = false;
+            reselectContact(_ct_target_name);
+            _ct_action = true;
             _task->showAlert("No path found", 1200);
           }
         }
@@ -1988,7 +1996,7 @@ public:
           } else {
             display.setColor(DisplayDriver::LIGHT);
             display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Requesting...");
-            if (millis() > _ct_gps_timeout) { _ct_gps_pending = false; _task->showAlert("Location timeout", 1200); }
+            if (millis() > _ct_gps_timeout) { _ct_gps_pending = false; _scan_action = true; _task->showAlert("Location timeout", 1200); }
           }
         } else if (_ct_status_pending || _ct_status_done) {
           display.setColor(DisplayDriver::YELLOW);
@@ -2009,7 +2017,7 @@ public:
           } else {
             display.setColor(DisplayDriver::LIGHT);
             display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Waiting...");
-            if (millis() > _ct_status_timeout) { _ct_status_pending = false; _task->showAlert("Status timeout", 1200); }
+            if (millis() > _ct_status_timeout) { _ct_status_pending = false; _scan_action = true; _task->showAlert("Status timeout", 1200); }
           }
         } else if (_ct_telem_pending || _ct_telem_done) {
           display.setColor(DisplayDriver::YELLOW);
@@ -2029,7 +2037,7 @@ public:
           } else {
             display.setColor(DisplayDriver::LIGHT);
             display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Waiting...");
-            if (millis() > _ct_telem_timeout) { _ct_telem_pending = false; _task->showAlert("Telem timeout", 1200); }
+            if (millis() > _ct_telem_timeout) { _ct_telem_pending = false; _scan_action = true; _task->showAlert("Telem timeout", 1200); }
           }
         } else if (_ct_path_pending) {
           display.setColor(DisplayDriver::YELLOW);
@@ -2057,7 +2065,7 @@ public:
           } else {
             display.setColor(DisplayDriver::LIGHT);
             display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Searching...");
-            if (millis() > _ct_path_timeout) { _ct_path_pending = false; _task->showAlert("No path found", 1200); }
+            if (millis() > _ct_path_timeout) { _ct_path_pending = false; _scan_action = true; _task->showAlert("No path found", 1200); }
           }
         }
       } else if (_scan_action) {
@@ -2838,8 +2846,6 @@ public:
           _ct_gps_no_fix = false;
           reselectContact(_ct_target_name);
           _ct_action = true;
-          _ct_action_sel = 0;
-          _ct_detail_scroll = 0;
           return true;
         }
         if (c == KEY_ENTER && _ct_gps_done) {
@@ -2866,8 +2872,6 @@ public:
           _ct_status_done = false;
           reselectContact(_ct_target_name);
           _ct_action = true;  // return to contact card
-          _ct_action_sel = 0;
-          _ct_detail_scroll = 0;
           return true;
         }
         return true;
@@ -2878,8 +2882,6 @@ public:
           _ct_telem_done = false;
           reselectContact(_ct_target_name);
           _ct_action = true;  // return to contact card
-          _ct_action_sel = 0;
-          _ct_detail_scroll = 0;
           return true;
         }
         return true;
@@ -2890,8 +2892,6 @@ public:
           _ct_path_found = false;
           reselectContact(_ct_target_name);
           _ct_action = true;  // return to contact card
-          _ct_action_sel = 0;
-          _ct_detail_scroll = 0;
           return true;
         }
         return true;
@@ -3216,7 +3216,7 @@ public:
       if (_ct_gps_pending || _ct_gps_done || _ct_gps_no_fix) {
         if (c == KEY_CANCEL) {
           _ct_gps_pending = false; _ct_gps_done = false; _ct_gps_no_fix = false;
-          _scan_action = true; _scan_action_sel = 0; _scan_detail_scroll = 0;
+          _scan_action = true;
           return true;
         }
 #if ENV_INCLUDE_GPS == 1
@@ -3238,7 +3238,7 @@ public:
       if (_ct_status_pending || _ct_status_done) {
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_status_pending = false; _ct_status_done = false;
-          _scan_action = true; _scan_action_sel = 0; _scan_detail_scroll = 0;
+          _scan_action = true;
           return true;
         }
         return true;
@@ -3246,7 +3246,7 @@ public:
       if (_ct_telem_pending || _ct_telem_done) {
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_telem_pending = false; _ct_telem_done = false;
-          _scan_action = true; _scan_action_sel = 0; _scan_detail_scroll = 0;
+          _scan_action = true;
           return true;
         }
         return true;
@@ -3254,7 +3254,7 @@ public:
       if (_ct_path_pending) {
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_path_pending = false; _ct_path_found = false;
-          _scan_action = true; _scan_action_sel = 0; _scan_detail_scroll = 0;
+          _scan_action = true;
           return true;
         }
         return true;
