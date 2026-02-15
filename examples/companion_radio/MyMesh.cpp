@@ -812,8 +812,9 @@ void MyMesh::onContactResponse(const ContactInfo &contact, const uint8_t *data, 
   // Check for UI-initiated telemetry response
   if (_ui && len > 4 && ui_pending_telemetry && tag == ui_pending_telemetry) {
     ui_pending_telemetry = 0;
-    // Parse LPP telemetry to extract voltage and temperature
+    // Parse LPP telemetry to extract voltage, temperature, and GPS
     float voltage = 0, temperature = -274;  // -274 = not available
+    float telem_lat = 0, telem_lon = 0;
     LPPReader reader(&data[4], len - 4);
     uint8_t channel, type;
     while (reader.readHeader(channel, type)) {
@@ -826,12 +827,12 @@ void MyMesh::onContactResponse(const ContactInfo &contact, const uint8_t *data, 
       } else if (type == LPP_BAROMETRIC_PRESSURE) {
         float p; reader.readPressure(p);
       } else if (type == LPP_GPS) {
-        float lat, lon, alt; reader.readGPS(lat, lon, alt);
+        float alt; reader.readGPS(telem_lat, telem_lon, alt);
       } else {
         break;  // unknown type, stop parsing
       }
     }
-    _ui->onTelemetryResponse(contact, voltage, temperature);
+    _ui->onTelemetryResponse(contact, voltage, temperature, telem_lat, telem_lon);
   }
 
   // Check for UI-initiated status response

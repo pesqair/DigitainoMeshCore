@@ -147,7 +147,7 @@ public:
   void onAckReceived(uint32_t ack_hash) override;
   void matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) override;
   void onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_x4) override;
-  void onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature) override;
+  void onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature, float gps_lat = 0, float gps_lon = 0) override;
   void onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, uint16_t batt_mv) override;
   void showAlert(const char* text, int duration_millis);
   int  getMsgCount() const { return _msgcount; }

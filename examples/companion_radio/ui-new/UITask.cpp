@@ -234,6 +234,10 @@ class HomeScreen : public UIScreen {
   float _odometer;          // miles traveled
   unsigned long _odo_last;  // last odometer update time
   bool _nav_screen_lock;
+  // Waypoint navigation state
+  bool _nav_has_waypoint;
+  float _nav_wp_lat, _nav_wp_lon;  // decimal degrees
+  char _nav_wp_name[12];           // truncated contact name
   bool _page_active;
   uint8_t _settings_sel;
   uint8_t _ct_filter;  // 0=All, 1=Contacts, 2=Repeaters
@@ -261,6 +265,9 @@ class HomeScreen : public UIScreen {
     bool has_status;
     uint32_t uptime_secs;
     uint16_t batt_mv;
+    // GPS from telemetry response
+    bool has_gps;
+    float gps_lat, gps_lon;  // decimal degrees
   };
   #define CT_CACHE_SIZE 16
   ContactCache _ct_cache[CT_CACHE_SIZE];
@@ -318,6 +325,11 @@ class HomeScreen : public UIScreen {
   bool _ct_status_pending;
   unsigned long _ct_status_timeout;
   bool _ct_status_done;
+  // GPS request sub-state
+  bool _ct_gps_pending;
+  unsigned long _ct_gps_timeout;
+  bool _ct_gps_done;     // location received
+  bool _ct_gps_no_fix;   // responded but no GPS
 
   // Build message filter options by scanning message log for unique channel_idx values
   void rebuildMsgFilters() {
@@ -507,18 +519,20 @@ public:
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
        _preset_sel(0), _msg_sel(0), _msg_sel_prev(0xFF), _msg_scroll_px(0),
        _msg_detail(false), _msg_detail_scroll(0), _msg_reply_menu(false), _msg_reply_sel(0), _shutdown_init(false), _show_voltage(false), _show_speed(false),
-       _show_snr(false), _pkt_sel(0), _pkt_detail(false), _pkt_detail_scroll(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _nav_screen_lock(false),
+       _show_snr(false), _pkt_sel(0), _pkt_detail(false), _pkt_detail_scroll(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _nav_screen_lock(false), _nav_has_waypoint(false),
        _page_active(false), _settings_sel(0), _ct_filter(0), _msg_filter(0), _msg_filter_count(0),
        _preset_target_choosing(false), _preset_target_sel(0), _preset_edit_mode(false), _preset_edit_sel(0),
        _ct_sel(0), _ct_count(0), _ct_action(false), _ct_action_sel(0), _ct_action_count(0), _ct_detail_scroll(0),
        _ct_path_pending(false), _ct_path_found(false),
        _ct_telem_pending(false), _ct_telem_done(false),
        _ct_status_pending(false), _ct_status_done(false),
+       _ct_gps_pending(false), _ct_gps_done(false), _ct_gps_no_fix(false),
        sensors_lpp(200) { memset(_ct_cache, 0, sizeof(_ct_cache)); }
 
   bool isUserBusy() const {
     return _page_active || _msg_detail || _pkt_detail || _ct_action || _ct_path_pending || _ct_telem_pending ||
            _ct_telem_done || _ct_status_pending || _ct_status_done ||
+           _ct_gps_pending || _ct_gps_done || _ct_gps_no_fix ||
            _preset_target_choosing || _preset_edit_mode;
   }
 
@@ -1320,7 +1334,35 @@ public:
       }
     } else if (_page == HomePage::TRACE) {
       display.setTextSize(1);
-      if (_ct_status_pending || _ct_status_done) {
+      if (_ct_gps_pending || _ct_gps_done || _ct_gps_no_fix) {
+        display.setColor(DisplayDriver::YELLOW);
+        snprintf(tmp, sizeof(tmp), "Location: %s", _ct_target_name);
+        display.drawTextEllipsized(0, TOP_BAR_H + 6, display.width(), tmp);
+        if (_ct_gps_done) {
+          ContactCache* cc = findCache(_ct_path_key);
+          display.setColor(DisplayDriver::LIGHT);
+          if (cc && cc->has_gps) {
+            snprintf(tmp, sizeof(tmp), "%.5f, %.5f", cc->gps_lat, cc->gps_lon);
+            display.setCursor(0, TOP_BAR_H + 18);
+            display.print(tmp);
+            display.setColor(DisplayDriver::GREEN);
+            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 34, "ENTER to navigate");
+          } else {
+            display.setCursor(0, TOP_BAR_H + 22);
+            display.print("No GPS data");
+          }
+        } else if (_ct_gps_no_fix) {
+          display.setColor(DisplayDriver::LIGHT);
+          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "No GPS fix");
+        } else {
+          display.setColor(DisplayDriver::LIGHT);
+          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Requesting...");
+          if (millis() > _ct_gps_timeout) {
+            _ct_gps_pending = false;
+            _task->showAlert("Location timeout", 1200);
+          }
+        }
+      } else if (_ct_status_pending || _ct_status_done) {
         display.setColor(DisplayDriver::YELLOW);
         snprintf(tmp, sizeof(tmp), "Status: %s", _ct_target_name);
         display.drawTextEllipsized(0, TOP_BAR_H + 6, display.width(), tmp);
@@ -1441,12 +1483,24 @@ public:
             items[item_count] = "Telemetry"; item_is_action[item_count++] = true;
 #if ENV_INCLUDE_GPS == 1
             items[item_count] = "Send GPS"; item_is_action[item_count++] = true;
+            items[item_count] = "Req Location"; item_is_action[item_count++] = true;
 #endif
           } else {
             items[item_count] = "Find Path"; item_is_action[item_count++] = true;
             items[item_count] = "Telemetry"; item_is_action[item_count++] = true;
             items[item_count] = "Status"; item_is_action[item_count++] = true;
           }
+#if ENV_INCLUDE_GPS == 1
+          {
+            // Show Navigate if contact has GPS (from advert or telemetry cache)
+            ContactCache* ncc = findCache(ci.id.pub_key);
+            bool has_advert_gps = (ci.gps_lat != 0 || ci.gps_lon != 0);
+            bool has_cached_gps = (ncc && ncc->has_gps);
+            if (has_advert_gps || has_cached_gps) {
+              items[item_count] = "Navigate"; item_is_action[item_count++] = true;
+            }
+          }
+#endif
           _ct_action_count = item_count;  // number of selectable actions
 
           // Cached info lines (not selectable)
@@ -1875,8 +1929,13 @@ public:
         display.setCursor(0, TOP_BAR_H);
         display.print(spdbuf);
 
-        // Heading text (center-ish)
-        if (moving) {
+        // Heading text (center-ish) or waypoint name
+        if (_nav_has_waypoint) {
+          char wpbuf[16];
+          snprintf(wpbuf, sizeof(wpbuf), "->%s", _nav_wp_name);
+          display.setColor(DisplayDriver::GREEN);
+          display.drawTextCentered(display.width() / 2, TOP_BAR_H, wpbuf);
+        } else if (moving) {
           int dir_idx = ((int)(course_deg + 11.25f) % 360) / 22.5f;
           if (dir_idx < 0) dir_idx = 0;
           if (dir_idx > 15) dir_idx = 15;
@@ -1956,24 +2015,108 @@ public:
           }
         }
 
-        // === Bottom rows: alt + odometer ===
-        display.setColor(DisplayDriver::LIGHT);
-        float alt_ft = nmea->getAltitude() / 1000.0f * 3.28084f;
-        char altbuf[12];
-        snprintf(altbuf, sizeof(altbuf), "%.0fft", alt_ft);
-        display.setCursor(0, 55);
-        display.print(altbuf);
+        // === Waypoint target arrow (GREEN) ===
+        float wp_bearing_rad = 0;
+        float wp_dist_mi = 0;
+        if (_nav_has_waypoint) {
+          float my_lat = nmea->getLatitude() / 1000000.0f;
+          float my_lon = nmea->getLongitude() / 1000000.0f;
+          float lat1 = my_lat * 3.14159f / 180.0f;
+          float lat2 = _nav_wp_lat * 3.14159f / 180.0f;
+          float dLat = lat2 - lat1;
+          float dLon = (_nav_wp_lon - my_lon) * 3.14159f / 180.0f;
+          // Bearing (great circle)
+          wp_bearing_rad = atan2f(sinf(dLon) * cosf(lat2),
+                                  cosf(lat1) * sinf(lat2) - sinf(lat1) * cosf(lat2) * cosf(dLon));
+          // Distance (Haversine, R = 3958.8 mi)
+          float a = sinf(dLat / 2) * sinf(dLat / 2) +
+                    cosf(lat1) * cosf(lat2) * sinf(dLon / 2) * sinf(dLon / 2);
+          wp_dist_mi = 2 * 3958.8f * atan2f(sqrtf(a), sqrtf(1 - a));
 
-        // Odometer (right side of same row)
-        char odobuf[14];
-        if (_odometer < 10.0f) {
-          snprintf(odobuf, sizeof(odobuf), "%.2fmi", _odometer);
-        } else {
-          snprintf(odobuf, sizeof(odobuf), "%.1fmi", _odometer);
+          // Draw target arrow on compass (GREEN line from center toward bearing)
+          display.setColor(DisplayDriver::GREEN);
+          float bsr = sinf(wp_bearing_rad);
+          float bcr = cosf(wp_bearing_rad);
+          int btipX = cx + (int)((r - 1) * bsr);
+          int btipY = cy - (int)((r - 1) * bcr);
+          int bbaseX = cx + (int)(2 * bsr);
+          int bbaseY = cy - (int)(2 * bcr);
+          for (int s = 0; s <= r; s++) {
+            int px = bbaseX + (btipX - bbaseX) * s / r;
+            int py = bbaseY + (btipY - bbaseY) * s / r;
+            display.fillRect(px, py, 2, 2);
+          }
+          // Small arrowhead
+          int blx = btipX - (int)(2 * bcr);
+          int bly = btipY - (int)(2 * bsr);
+          int brx = btipX + (int)(2 * bcr);
+          int bry = btipY + (int)(2 * bsr);
+          int bmx = btipX + (int)(2 * bsr);
+          int bmy = btipY - (int)(2 * bcr);
+          for (int s = 0; s <= 3; s++) {
+            int px1 = blx + (bmx - blx) * s / 3;
+            int py1 = bly + (bmy - bly) * s / 3;
+            display.fillRect(px1, py1, 1, 1);
+            int px2 = brx + (bmx - brx) * s / 3;
+            int py2 = bry + (bmy - bry) * s / 3;
+            display.fillRect(px2, py2, 1, 1);
+          }
         }
-        int odoW = display.getTextWidth(odobuf);
-        display.setCursor(display.width() - odoW - 1, 55);
-        display.print(odobuf);
+
+        // === Bottom rows ===
+        if (_nav_has_waypoint) {
+          // Distance (left)
+          display.setColor(DisplayDriver::GREEN);
+          char distbuf[12];
+          if (wp_dist_mi < 0.1f) {
+            snprintf(distbuf, sizeof(distbuf), "%.0fft", wp_dist_mi * 5280);
+          } else if (wp_dist_mi < 10.0f) {
+            snprintf(distbuf, sizeof(distbuf), "%.2fmi", wp_dist_mi);
+          } else {
+            snprintf(distbuf, sizeof(distbuf), "%.1fmi", wp_dist_mi);
+          }
+          display.setCursor(0, 55);
+          display.print(distbuf);
+
+          // ETE from VMG (right)
+          char etebuf[10];
+          float heading_rad = course_deg * 3.14159f / 180.0f;
+          float vmg = speed_mph * cosf(heading_rad - wp_bearing_rad);
+          if (vmg > 0.5f) {
+            float ete_min = (wp_dist_mi / vmg) * 60.0f;
+            if (ete_min < 60) {
+              snprintf(etebuf, sizeof(etebuf), "%.0fm", ete_min);
+            } else {
+              int hrs = (int)(ete_min / 60);
+              int mins = (int)ete_min % 60;
+              snprintf(etebuf, sizeof(etebuf), "%dh%02dm", hrs, mins);
+            }
+          } else {
+            strcpy(etebuf, "--");
+          }
+          int eteW = display.getTextWidth(etebuf);
+          display.setCursor(display.width() - eteW - 1, 55);
+          display.print(etebuf);
+        } else {
+          // Default: alt + odometer
+          display.setColor(DisplayDriver::LIGHT);
+          float alt_ft = nmea->getAltitude() / 1000.0f * 3.28084f;
+          char altbuf[12];
+          snprintf(altbuf, sizeof(altbuf), "%.0fft", alt_ft);
+          display.setCursor(0, 55);
+          display.print(altbuf);
+
+          // Odometer (right side of same row)
+          char odobuf[14];
+          if (_odometer < 10.0f) {
+            snprintf(odobuf, sizeof(odobuf), "%.2fmi", _odometer);
+          } else {
+            snprintf(odobuf, sizeof(odobuf), "%.1fmi", _odometer);
+          }
+          int odoW = display.getTextWidth(odobuf);
+          display.setCursor(display.width() - odoW - 1, 55);
+          display.print(odobuf);
+        }
       }
       // Keep screen on while nav screen lock is active
       if (_nav_screen_lock) {
@@ -2128,6 +2271,35 @@ public:
     // === LEVEL 2: INSIDE PAGE ===
 
     if (_page == HomePage::TRACE) {
+      if (_ct_gps_pending || _ct_gps_done || _ct_gps_no_fix) {
+        if (c == KEY_CANCEL) {
+          _ct_gps_pending = false;
+          _ct_gps_done = false;
+          _ct_gps_no_fix = false;
+          reselectContact(_ct_target_name);
+          _ct_action = true;
+          _ct_action_sel = 0;
+          _ct_detail_scroll = 0;
+          return true;
+        }
+        if (c == KEY_ENTER && _ct_gps_done) {
+          // Navigate to this contact's location
+          ContactCache* cc = findCache(_ct_path_key);
+          if (cc && cc->has_gps) {
+            _nav_wp_lat = cc->gps_lat;
+            _nav_wp_lon = cc->gps_lon;
+            strncpy(_nav_wp_name, _ct_target_name, sizeof(_nav_wp_name) - 1);
+            _nav_wp_name[sizeof(_nav_wp_name) - 1] = '\0';
+            _nav_has_waypoint = true;
+            _ct_gps_pending = false;
+            _ct_gps_done = false;
+            _ct_gps_no_fix = false;
+            _page = HomePage::NAV;
+          }
+          return true;
+        }
+        return true;
+      }
       if (_ct_status_pending || _ct_status_done) {
         if (c == KEY_CANCEL || c == KEY_ENTER) {
           _ct_status_pending = false;
@@ -2202,7 +2374,7 @@ public:
           ContactInfo ci;
           if (getContactByKey(_ct_action_key, ci)) {
             // Determine which action was selected
-            const char* actions[5];
+            const char* actions[8];
             uint8_t act_count = 0;
             if (ci.type == ADV_TYPE_CHAT) {
               actions[act_count++] = "Send DM";
@@ -2210,6 +2382,7 @@ public:
               actions[act_count++] = "Telemetry";
 #if ENV_INCLUDE_GPS == 1
               actions[act_count++] = "Send GPS";
+              actions[act_count++] = "Req Location";
 #endif
             } else if (ci.type == ADV_TYPE_REPEATER) {
               actions[act_count++] = "Find Path";
@@ -2219,6 +2392,16 @@ public:
               actions[act_count++] = "Find Path";
               actions[act_count++] = "Telemetry";
             }
+#if ENV_INCLUDE_GPS == 1
+            {
+              ContactCache* ncc = findCache(ci.id.pub_key);
+              bool has_advert_gps = (ci.gps_lat != 0 || ci.gps_lon != 0);
+              bool has_cached_gps = (ncc && ncc->has_gps);
+              if (has_advert_gps || has_cached_gps) {
+                actions[act_count++] = "Navigate";
+              }
+            }
+#endif
             const char* chosen = actions[_ct_action_sel];
             if (strcmp(chosen, "Send DM") == 0) {
               _ct_action = false;
@@ -2269,6 +2452,38 @@ public:
             } else if (strcmp(chosen, "Send GPS") == 0) {
               _ct_action = false;
               _task->sendGPSDM(ci);
+            } else if (strcmp(chosen, "Req Location") == 0) {
+              uint32_t est_timeout;
+              int result = the_mesh.sendTelemetryReq(ci, est_timeout);
+              if (result != MSG_SEND_FAILED) {
+                _ct_action = false;
+                _ct_gps_pending = true;
+                _ct_gps_done = false;
+                _ct_gps_no_fix = false;
+                _ct_gps_timeout = millis() + est_timeout + 2000;
+                strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
+                _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
+                memcpy(_ct_path_key, ci.id.pub_key, PUB_KEY_SIZE);
+              } else {
+                _task->showAlert("Send failed", 800);
+              }
+            } else if (strcmp(chosen, "Navigate") == 0) {
+              // Copy GPS coords to waypoint state
+              ContactCache* ncc = findCache(ci.id.pub_key);
+              bool has_cached_gps = (ncc && ncc->has_gps);
+              if (has_cached_gps) {
+                _nav_wp_lat = ncc->gps_lat;
+                _nav_wp_lon = ncc->gps_lon;
+              } else {
+                // From advert (microdegrees to decimal degrees)
+                _nav_wp_lat = ci.gps_lat / 1000000.0f;
+                _nav_wp_lon = ci.gps_lon / 1000000.0f;
+              }
+              strncpy(_nav_wp_name, ci.name, sizeof(_nav_wp_name) - 1);
+              _nav_wp_name[sizeof(_nav_wp_name) - 1] = '\0';
+              _nav_has_waypoint = true;
+              _ct_action = false;
+              _page = HomePage::NAV;
 #endif
             }
           }
@@ -2770,10 +2985,15 @@ public:
       return true;
     }
     if (c == KEY_DOWN && _page == HomePage::NAV) {
-      _max_speed = 0;
-      _odometer = 0;
-      _odo_last = 0;
-      _task->showAlert("Trip reset", 800);
+      if (_nav_has_waypoint) {
+        _nav_has_waypoint = false;
+        _task->showAlert("WP cleared", 800);
+      } else {
+        _max_speed = 0;
+        _odometer = 0;
+        _odo_last = 0;
+        _task->showAlert("Trip reset", 800);
+      }
       return true;
     }
 #endif
@@ -3863,7 +4083,7 @@ void UITask::onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_
   hs->_ct_path_found = true;
 }
 
-void UITask::onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature) {
+void UITask::onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature, float gps_lat, float gps_lon) {
   if (!home) return;
   HomeScreen* hs = (HomeScreen*)home;
 
@@ -3872,10 +4092,25 @@ void UITask::onTelemetryResponse(const ContactInfo& contact, float voltage, floa
   cc->has_telem = true;
   cc->voltage = voltage;
   cc->temperature = temperature;
+  if (gps_lat != 0 || gps_lon != 0) {
+    cc->has_gps = true;
+    cc->gps_lat = gps_lat;
+    cc->gps_lon = gps_lon;
+  }
 
-  if (!hs->_ct_telem_pending) return;
-  hs->_ct_telem_done = true;
-  hs->_ct_telem_pending = false;
+  if (!hs->_ct_telem_pending && !hs->_ct_gps_pending) return;
+  if (hs->_ct_gps_pending) {
+    hs->_ct_gps_pending = false;
+    if (gps_lat != 0 || gps_lon != 0) {
+      hs->_ct_gps_done = true;
+    } else {
+      hs->_ct_gps_no_fix = true;
+    }
+  }
+  if (hs->_ct_telem_pending) {
+    hs->_ct_telem_done = true;
+    hs->_ct_telem_pending = false;
+  }
 }
 
 void UITask::onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, uint16_t batt_mv) {
