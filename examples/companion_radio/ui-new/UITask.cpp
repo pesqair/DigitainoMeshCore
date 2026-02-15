@@ -591,171 +591,71 @@ class HomeScreen : public UIScreen {
 #endif
 
     // 3. Signal bars (when _show_snr is ON)
-    // Layout (right-to-left): [bat] BB[BARS]R | AA[BARS]T
-    // Visual (left-to-right):  T[BARS]AA | R[BARS]BB [bat]
+    // Unified layout: AA ▲[BARS] ▼[BARS] [mute][bat]
+    // Draw order (right-to-left): RX bars, TX bars, hex ID
     if (_show_snr) {
       int bars_w = 11;
       int bars_y = 3;
 
-      // When synced, advance shared cycle index ONCE before computing either
-      bool synced = _task->_signal_synced &&
-                    _task->_tx_signal_count > 0 &&
-                    (millis() - _task->_tx_signal_time) / 1000 < 300;
-      if (synced && _task->_tx_signal_count > 1 && millis() - _task->_tx_cycle_time > 2000) {
-        _task->_tx_signal_cycle = (_task->_tx_signal_cycle + 1) % _task->_tx_signal_count;
-        _task->_tx_cycle_time = millis();
-      }
+      bool use_cycling = _task->_signal_count > 0 &&
+                         (millis() - _task->_signal_time) / 1000 < 300;
+      bool use_live = !use_cycling &&
+                      _task->_last_rx_time > 0 &&
+                      (millis() - _task->_last_rx_time) / 1000 < 300;
 
-      // --- Compute RX signal data ---
-      int rx_bars = 0;
-      bool has_rx = false;
-      uint8_t rx_id = 0;
-      if (synced && _task->_rx_signal_count > 0 &&
-          (millis() - _task->_rx_signal_time) / 1000 < 300) {
-        // Synced mode: RX uses same cycle index as TX
-        has_rx = true;
+      if (use_cycling) {
         _needs_fast_refresh = true;
-        uint8_t idx = _task->_tx_signal_cycle;
-        if (idx < _task->_rx_signal_count) {
-          auto& rxe = _task->_rx_signals[idx];
-          rx_id = rxe.id;
-          float snr = (float)rxe.snr_x4 / 4.0f;
-          if (snr > 10) rx_bars = 4;
-          else if (snr > 5) rx_bars = 3;
-          else if (snr > 0) rx_bars = 2;
-          else if (snr > -10) rx_bars = 1;
+        // Advance cycle every 2s
+        if (_task->_signal_count > 1 && millis() - _task->_signal_cycle_time > 2000) {
+          _task->_signal_cycle = (_task->_signal_cycle + 1) % _task->_signal_count;
+          _task->_signal_cycle_time = millis();
         }
-      } else {
-        bool use_cycling = _task->_rx_signal_count > 0 &&
-                           (millis() - _task->_rx_signal_time) / 1000 < 300;
-        bool use_live = _task->_last_rx_time > 0 &&
-                        (millis() - _task->_last_rx_time) / 1000 < 300;
-        if (use_cycling && use_live && _task->_last_rx_time > _task->_rx_signal_time) {
-          if (_task->_rx_full_cycles >= 2) {
-            use_cycling = false;  // cycling done, allow live packet
-          }
-        }
-        if (use_cycling) {
-          has_rx = true;
-          _needs_fast_refresh = true;
-          if (_task->_rx_signal_count > 1 && millis() - _task->_rx_cycle_time > 2000) {
-            uint8_t prev = _task->_rx_signal_cycle;
-            _task->_rx_signal_cycle = (prev + 1) % _task->_rx_signal_count;
-            if (_task->_rx_signal_cycle < prev) {
-              _task->_rx_full_cycles++;  // wrapped around
-            }
-            _task->_rx_cycle_time = millis();
-          }
-          auto& rxe = _task->_rx_signals[_task->_rx_signal_cycle];
-          rx_id = rxe.id;
-          float snr = (float)rxe.snr_x4 / 4.0f;
-          if (snr > 10) rx_bars = 4;
-          else if (snr > 5) rx_bars = 3;
-          else if (snr > 0) rx_bars = 2;
-          else if (snr > -10) rx_bars = 1;
-        } else if (use_live) {
-          has_rx = true;
-          _needs_fast_refresh = true;
-          rx_id = _task->_last_rx_id;
-          float snr = (float)_task->_last_rx_snr_x4 / 4.0f;
-          if (snr > 10) rx_bars = 4;
-          else if (snr > 5) rx_bars = 3;
-          else if (snr > 0) rx_bars = 2;
-          else if (snr > -10) rx_bars = 1;
-        }
-      }
+        auto& entry = _task->_signals[_task->_signal_cycle];
 
-      // --- Compute TX signal data ---
-      bool has_tx = false;
-      bool tx_failed = false;
-      int tx_bars = 0;
-      uint8_t tx_id = 0;
-      if (_task->_tx_signal_count > 0) {
-        unsigned long tx_age = (millis() - _task->_tx_signal_time) / 1000;
-        if (tx_age < 300) {
-          has_tx = true;
-          _needs_fast_refresh = true;
-          if (!synced && _task->_tx_signal_count > 1 && millis() - _task->_tx_cycle_time > 2000) {
-            _task->_tx_signal_cycle = (_task->_tx_signal_cycle + 1) % _task->_tx_signal_count;
-            _task->_tx_cycle_time = millis();
-          }
-          auto& txe = _task->_tx_signals[_task->_tx_signal_cycle];
-          tx_id = txe.id;
-          tx_failed = txe.failed;
-          if (!tx_failed) {
-            float tx_snr = (float)txe.snr_x4 / 4.0f;
-            if (tx_snr > 10) tx_bars = 4;
-            else if (tx_snr > 5) tx_bars = 3;
-            else if (tx_snr > 0) tx_bars = 2;
-            else if (tx_snr > -10) tx_bars = 1;
-          }
-        }
-      }
+        // Compute RX bars from entry
+        int rx_bars = 0;
+        float rx_snr = (float)entry.rx_snr_x4 / 4.0f;
+        if (rx_snr > 10) rx_bars = 4;
+        else if (rx_snr > 5) rx_bars = 3;
+        else if (rx_snr > 0) rx_bars = 2;
+        else if (rx_snr > -10) rx_bars = 1;
 
-      // --- Draw right-to-left: RX hex, gap, bars+arrow, gap, TX hex, gap, bars+arrow ---
-      // Arrow icons (3x5px) drawn above bar 0 instead of text labels
-
-      // RX hex ID
-      if (has_rx && rx_id != 0) {
-        char hex_id[4];
-        snprintf(hex_id, sizeof(hex_id), "%02X", rx_id);
-        right_x -= 12;
+        // Draw RX bars with down-arrow (▼) on bar 0
+        right_x -= bars_w;
+        int bars_x = right_x;
         display.setColor(DisplayDriver::LIGHT);
-        display.setCursor(right_x, 3);
-        display.print(hex_id);
-        right_x -= 2;  // gap between hex and bars
-      }
-
-      // RX bars with down-arrow (▼) on bar 0
-      right_x -= bars_w;
-      int bars_x = right_x;
-      // Draw down-arrow ▼ above bar 0 (5x3px at bars_x, bars_y)
-      display.setColor(DisplayDriver::LIGHT);
-      display.fillRect(bars_x, bars_y, 5, 1);        // █████
-      display.fillRect(bars_x + 1, bars_y + 1, 3, 1); // .███.
-      display.fillRect(bars_x + 2, bars_y + 2, 1, 1);  // ..█..
-      // Draw bars on top
-      for (int b = 0; b < 4; b++) {
-        int bh = 3 + b * 2;
-        int bx = bars_x + b * 3;
-        int by = bars_y + (10 - bh);
-        if (b < rx_bars) {
-          display.setColor(DisplayDriver::GREEN);
-          display.fillRect(bx, by, 2, bh);
-        } else {
-          display.setColor(DisplayDriver::GREEN);
-          display.fillRect(bx, bars_y + 9, 2, 1);
+        display.fillRect(bars_x, bars_y, 5, 1);
+        display.fillRect(bars_x + 1, bars_y + 1, 3, 1);
+        display.fillRect(bars_x + 2, bars_y + 2, 1, 1);
+        for (int b = 0; b < 4; b++) {
+          int bh = 3 + b * 2;
+          int bx = bars_x + b * 3;
+          int by = bars_y + (10 - bh);
+          if (b < rx_bars) {
+            display.setColor(DisplayDriver::GREEN);
+            display.fillRect(bx, by, 2, bh);
+          } else {
+            display.setColor(DisplayDriver::GREEN);
+            display.fillRect(bx, bars_y + 9, 2, 1);
+          }
         }
-      }
 
-      // TX section (only when data exists)
-      if (has_tx) {
-        right_x -= 2;  // gap between RX and TX
+        right_x -= 1;  // gap between RX and TX
 
-        // TX hex ID
-        char tx_hex[4];
-        snprintf(tx_hex, sizeof(tx_hex), "%02X", tx_id);
-        right_x -= 12;
-        display.setColor(DisplayDriver::LIGHT);
-        display.setCursor(right_x, 3);
-        display.print(tx_hex);
-        right_x -= 2;  // gap between hex and bars
-
-        // TX bars with up-arrow (▲) on bar 0
+        // Draw TX bars with up-arrow (▲) on bar 0
         right_x -= bars_w;
         bars_x = right_x;
-        // Draw up-arrow ▲ above bar 0 (5x3px at bars_x, bars_y)
         display.setColor(DisplayDriver::LIGHT);
-        display.fillRect(bars_x + 2, bars_y, 1, 1);        // ..█..
-        display.fillRect(bars_x + 1, bars_y + 1, 3, 1);    // .███.
-        display.fillRect(bars_x, bars_y + 2, 5, 1);         // █████
-        if (tx_failed) {
-          // Draw "?" in bar area to indicate ping failed/no response
-          display.setColor(DisplayDriver::LIGHT);
-          display.setCursor(bars_x + 3, bars_y + 3);
-          display.print("?");
-        } else {
-          // Draw normal bars
+        display.fillRect(bars_x + 2, bars_y, 1, 1);
+        display.fillRect(bars_x + 1, bars_y + 1, 3, 1);
+        display.fillRect(bars_x, bars_y + 2, 5, 1);
+        if (entry.has_tx) {
+          int tx_bars = 0;
+          float tx_snr = (float)entry.tx_snr_x4 / 4.0f;
+          if (tx_snr > 10) tx_bars = 4;
+          else if (tx_snr > 5) tx_bars = 3;
+          else if (tx_snr > 0) tx_bars = 2;
+          else if (tx_snr > -10) tx_bars = 1;
           for (int b = 0; b < 4; b++) {
             int bh = 3 + b * 2;
             int bx = bars_x + b * 3;
@@ -768,7 +668,61 @@ class HomeScreen : public UIScreen {
               display.fillRect(bx, bars_y + 9, 2, 1);
             }
           }
+        } else {
+          // TX pending/failed — draw "?"
+          display.setColor(DisplayDriver::LIGHT);
+          display.setCursor(bars_x + 3, bars_y + 3);
+          display.print("?");
         }
+
+        // Gap + hex ID
+        right_x -= 2;
+        char hex_id[4];
+        snprintf(hex_id, sizeof(hex_id), "%02X", entry.id);
+        right_x -= 12;
+        display.setColor(DisplayDriver::LIGHT);
+        display.setCursor(right_x, 3);
+        display.print(hex_id);
+
+      } else if (use_live) {
+        _needs_fast_refresh = true;
+
+        // Compute RX bars from live data
+        int rx_bars = 0;
+        float snr = (float)_task->_last_rx_snr_x4 / 4.0f;
+        if (snr > 10) rx_bars = 4;
+        else if (snr > 5) rx_bars = 3;
+        else if (snr > 0) rx_bars = 2;
+        else if (snr > -10) rx_bars = 1;
+
+        // Draw RX bars with down-arrow (▼)
+        right_x -= bars_w;
+        int bars_x = right_x;
+        display.setColor(DisplayDriver::LIGHT);
+        display.fillRect(bars_x, bars_y, 5, 1);
+        display.fillRect(bars_x + 1, bars_y + 1, 3, 1);
+        display.fillRect(bars_x + 2, bars_y + 2, 1, 1);
+        for (int b = 0; b < 4; b++) {
+          int bh = 3 + b * 2;
+          int bx = bars_x + b * 3;
+          int by = bars_y + (10 - bh);
+          if (b < rx_bars) {
+            display.setColor(DisplayDriver::GREEN);
+            display.fillRect(bx, by, 2, bh);
+          } else {
+            display.setColor(DisplayDriver::GREEN);
+            display.fillRect(bx, bars_y + 9, 2, 1);
+          }
+        }
+
+        // Gap + hex ID (no TX section for live-only)
+        right_x -= 2;
+        char hex_id[4];
+        snprintf(hex_id, sizeof(hex_id), "%02X", _task->_last_rx_id);
+        right_x -= 12;
+        display.setColor(DisplayDriver::LIGHT);
+        display.setCursor(right_x, 3);
+        display.print(hex_id);
       }
 
       right_x -= 1;
@@ -2734,7 +2688,7 @@ public:
         }
 
         // First Hop
-        snprintf(detail_items[detail_count++], 24, "1st Hop: %02X", pkt.first_hop);
+        snprintf(detail_items[detail_count++], 24, "Heard: %02X", pkt.first_hop);
 
         // Path (if path_len > 0)
         if (pkt.path_len > 0) {
@@ -5478,7 +5432,7 @@ void UITask::sendPresetDM(const ContactInfo& contact) {
 void UITask::logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4, uint8_t route_type, uint8_t payload_len) {
   auto& entry = _pkt_log[_pkt_log_next];
   entry.payload_type = payload_type;
-  entry.first_hop = (path_len > 0 && path != NULL) ? path[0] : 0;
+  entry.first_hop = (path_len > 0 && path != NULL) ? path[path_len - 1] : 0;
   entry.rssi = rssi;
   entry.snr_x4 = snr_x4;
   entry.timestamp = millis();
@@ -5536,14 +5490,11 @@ void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uin
   entry.tx_count = 1;
   // Clear signal displays and auto-ping queue for new message tracking
   if (is_sent) {
-    _tx_signal_count = 0;
-    _tx_signal_cycle = 0;
-    _rx_signal_count = 0;
-    _rx_signal_cycle = 0;
+    _signal_count = 0;
+    _signal_cycle = 0;
     _auto_ping_queue_count = 0;
     _auto_ping_next = 0;
     _auto_ping_pending = false;
-    _signal_synced = false;
   }
   entry.expected_ack = expected_ack;
   entry.delivered = false;
@@ -5636,20 +5587,22 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
           }
         }
       }
-      // Update RX signal cycling display with all heard repeaters
-      _rx_signal_count = 0;
-      for (int r = 0; r < entry.repeat_path_len && _rx_signal_count < TX_SIGNAL_MAX; r++) {
+      // Populate unified signal entries with RX data from retransmissions
+      _signal_count = 0;
+      for (int r = 0; r < entry.repeat_path_len && _signal_count < SIGNAL_MAX; r++) {
         if (entry.repeat_path_snr_x4[r] != 0) {
-          _rx_signals[_rx_signal_count].id = entry.repeat_path[r];
-          _rx_signals[_rx_signal_count].snr_x4 = entry.repeat_path_snr_x4[r];
-          _rx_signal_count++;
+          _signals[_signal_count].id = entry.repeat_path[r];
+          _signals[_signal_count].rx_snr_x4 = entry.repeat_path_snr_x4[r];
+          _signals[_signal_count].has_rx = true;
+          _signals[_signal_count].has_tx = false;  // pending auto-ping
+          _signals[_signal_count].tx_snr_x4 = 0;
+          _signal_count++;
         }
       }
-      if (_rx_signal_count > 0) {
-        _rx_signal_time = millis();
-        _rx_signal_cycle = 0;
-        _rx_cycle_time = millis();
-        _rx_full_cycles = 0;
+      if (_signal_count > 0) {
+        _signal_time = millis();
+        _signal_cycle = 0;
+        _signal_cycle_time = millis();
       }
       // Add heard repeaters to auto-ping queue (accumulate, don't reset in-flight pings)
       bool was_empty = (_auto_ping_queue_count == 0);
@@ -5743,21 +5696,21 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
   // Handle auto-ping response
   if (_auto_ping_pending) {
     _auto_ping_pending = false;
-    // Append to TX buffer
-    if (_tx_signal_count < TX_SIGNAL_MAX) {
-      _tx_signals[_tx_signal_count].id = _auto_ping_current_id;
-      _tx_signals[_tx_signal_count].snr_x4 = (int8_t)(snr_there * 4);
-      _tx_signals[_tx_signal_count].failed = false;
-      _tx_signal_count++;
-      _tx_signal_time = millis();
-      _tx_cycle_time = millis();
+    // Find matching entry and fill TX data
+    for (uint8_t i = 0; i < _signal_count; i++) {
+      if (_signals[i].id == _auto_ping_current_id) {
+        _signals[i].tx_snr_x4 = (int8_t)(snr_there * 4);
+        _signals[i].has_tx = true;
+        break;
+      }
     }
-    // Also update RX signal with correct repeater ID (snr_back = how well we heard them)
+    _signal_time = millis();
+    // Also update live RX with snr_back
     _last_rx_id = _auto_ping_current_id;
     _last_rx_snr_x4 = (int8_t)(snr_back * 4);
     _last_rx_time = millis();
     _auto_ping_next++;
-    _auto_ping_next_time = millis() + 1000;  // 1s delay before next
+    _auto_ping_next_time = millis() + 1000;
     return;
   }
 
@@ -5769,17 +5722,18 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
   hs->_ct_ping_snr_there = snr_there;
   hs->_ct_ping_snr_back = snr_back;
 
-  // Update TX signal with accurate snr_there
+  // Create single entry with both TX+RX
   uint8_t repeater_id = hs->_ct_path_key[0];
-  _tx_signals[0].id = repeater_id;
-  _tx_signals[0].snr_x4 = (int8_t)(snr_there * 4);
-  _tx_signals[0].failed = false;
-  _tx_signal_count = 1;
-  _tx_signal_time = millis();
-  _tx_signal_cycle = 0;
-  _tx_cycle_time = millis();
-
-  // Update RX signal with correct repeater ID (snr_back = how well we heard them)
+  _signals[0].id = repeater_id;
+  _signals[0].tx_snr_x4 = (int8_t)(snr_there * 4);
+  _signals[0].has_tx = true;
+  _signals[0].rx_snr_x4 = (int8_t)(snr_back * 4);
+  _signals[0].has_rx = true;
+  _signal_count = 1;
+  _signal_time = millis();
+  _signal_cycle = 0;
+  _signal_cycle_time = millis();
+  // Also update live RX
   _last_rx_id = repeater_id;
   _last_rx_snr_x4 = (int8_t)(snr_back * 4);
   _last_rx_time = millis();
@@ -5965,75 +5919,23 @@ void UITask::loop() {
           _auto_ping_current_id = hash;
           _auto_ping_timeout = millis() + est_timeout + 2000;
         } else {
-          // Send failed — record as failed entry
-          if (_tx_signal_count < TX_SIGNAL_MAX) {
-            _tx_signals[_tx_signal_count].id = hash;
-            _tx_signals[_tx_signal_count].snr_x4 = 0;
-            _tx_signals[_tx_signal_count].failed = true;
-            _tx_signal_count++;
-            _tx_signal_time = millis();
-          }
+          // Send failed — entry stays with has_tx=false (shows "?")
           _auto_ping_next++;
           _auto_ping_next_time = millis() + 1000;
         }
       } else {
-        // Repeater not in contacts — record as failed entry
-        if (_tx_signal_count < TX_SIGNAL_MAX) {
-          _tx_signals[_tx_signal_count].id = hash;
-          _tx_signals[_tx_signal_count].snr_x4 = 0;
-          _tx_signals[_tx_signal_count].failed = true;
-          _tx_signal_count++;
-          _tx_signal_time = millis();
-        }
+        // Repeater not in contacts — entry stays with has_tx=false (shows "?")
         _auto_ping_next++;
         _auto_ping_next_time = millis() + 500;
       }
     }
   }
 
-  // Auto-ping timeout — record as failed entry
+  // Auto-ping timeout — entry stays with has_tx=false (shows "?")
   if (_auto_ping_pending && millis() > _auto_ping_timeout) {
     _auto_ping_pending = false;
-    if (_tx_signal_count < TX_SIGNAL_MAX) {
-      _tx_signals[_tx_signal_count].id = _auto_ping_current_id;
-      _tx_signals[_tx_signal_count].snr_x4 = 0;
-      _tx_signals[_tx_signal_count].failed = true;
-      _tx_signal_count++;
-      _tx_signal_time = millis();
-    }
     _auto_ping_next++;
     _auto_ping_next_time = millis() + 1000;
-  }
-
-  // All auto-pings complete — sync RX and TX cycling order
-  if (_auto_ping_queue_count > 0 && !_auto_ping_pending &&
-      _auto_ping_next >= _auto_ping_queue_count && !_signal_synced) {
-    _signal_synced = true;
-    // Rebuild _rx_signals to match _tx_signals order (by repeater ID)
-    TxSignalEntry synced_rx[TX_SIGNAL_MAX];
-    uint8_t synced_count = 0;
-    for (uint8_t t = 0; t < _tx_signal_count && synced_count < TX_SIGNAL_MAX; t++) {
-      bool found = false;
-      for (uint8_t r = 0; r < _rx_signal_count; r++) {
-        if (_rx_signals[r].id == _tx_signals[t].id) {
-          synced_rx[synced_count] = _rx_signals[r];
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        // TX entry has no matching RX data (shouldn't happen often)
-        synced_rx[synced_count].id = _tx_signals[t].id;
-        synced_rx[synced_count].snr_x4 = 0;
-        synced_rx[synced_count].failed = false;
-      }
-      synced_count++;
-    }
-    memcpy(_rx_signals, synced_rx, sizeof(TxSignalEntry) * synced_count);
-    _rx_signal_count = synced_count;
-    _rx_signal_cycle = _tx_signal_cycle;
-    _rx_cycle_time = _tx_cycle_time;
-    _rx_signal_time = _tx_signal_time;
   }
 
 #ifdef PIN_BUZZER

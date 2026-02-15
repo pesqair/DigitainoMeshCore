@@ -48,8 +48,8 @@ public:
   virtual void onRxPacket(uint8_t first_path_byte, int16_t rssi, int8_t snr_x4) {
     // Suppress live RX updates while auto-pings are in progress
     if (_auto_ping_queue_count > 0 && (_auto_ping_next < _auto_ping_queue_count || _auto_ping_pending)) return;
-    // New packet breaks synced cycling — RX goes back to live
-    _signal_synced = false;
+    // New packet breaks cycling
+    _signal_count = 0;
     _last_rx_id = first_path_byte; _last_rx_time = millis(); _last_rx_rssi = rssi; _last_rx_snr_x4 = snr_x4;
   }
   virtual void onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_x4) { }
@@ -59,18 +59,20 @@ public:
   int16_t _last_rx_rssi = 0;
   int8_t _last_rx_snr_x4 = 0;
 
-  // TX signal cycling state (for status bar)
-  #define TX_SIGNAL_MAX 8
-  struct TxSignalEntry {
-    uint8_t id;       // 1-byte repeater hash
-    int8_t snr_x4;    // SNR * 4
-    bool failed;      // true if ping failed/timed out (show X instead of bars)
+  // Unified per-repeater signal display (status bar)
+  #define SIGNAL_MAX 8
+  struct SignalEntry {
+    uint8_t id;         // 1-byte repeater hash
+    int8_t rx_snr_x4;   // RX: how well we hear them (from retransmission)
+    int8_t tx_snr_x4;   // TX: how well they hear us (from ping snr_there)
+    bool has_rx;         // RX data available
+    bool has_tx;         // TX data available (ping succeeded)
   };
-  TxSignalEntry _tx_signals[TX_SIGNAL_MAX];
-  uint8_t _tx_signal_count = 0;
-  uint8_t _tx_signal_cycle = 0;        // current display index
-  unsigned long _tx_signal_time = 0;    // when data was last updated
-  unsigned long _tx_cycle_time = 0;     // when to advance cycle
+  SignalEntry _signals[SIGNAL_MAX];
+  uint8_t _signal_count = 0;
+  uint8_t _signal_cycle = 0;
+  unsigned long _signal_time = 0;       // when data was last updated
+  unsigned long _signal_cycle_time = 0; // when to advance cycle
 
   // Auto-ping queue (ping heard repeaters to get accurate snr_there)
   #define AUTO_PING_QUEUE_MAX 4
@@ -81,15 +83,6 @@ public:
   unsigned long _auto_ping_timeout = 0; // response timeout
   uint8_t _auto_ping_current_id = 0;    // hash of repeater being pinged
   unsigned long _auto_ping_next_time = 0; // when to send next ping
-
-  // RX signal cycling state (from heard retransmissions)
-  TxSignalEntry _rx_signals[TX_SIGNAL_MAX];
-  uint8_t _rx_signal_count = 0;
-  uint8_t _rx_signal_cycle = 0;
-  unsigned long _rx_signal_time = 0;
-  unsigned long _rx_cycle_time = 0;
-  uint8_t _rx_full_cycles = 0;       // completed full rotations
-  bool _signal_synced = false;       // true after all auto-pings done, TX/RX cycle together
 
   virtual void onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature, float gps_lat = 0, float gps_lon = 0) { }
   virtual void onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, uint16_t batt_mv) { }
