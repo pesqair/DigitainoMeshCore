@@ -14,7 +14,7 @@ The home screen is a carousel of pages navigated with LEFT/RIGHT. Press ENTER to
 
 ### Home
 
-Message count, date/time, and connection status. Shows BLE pairing PIN when waiting for pairing.
+Info dashboard shown directly in the carousel (no click needed). Displays node name, full date/time, battery voltage and percentage, unread message count, GPS status, and BT connection status. Shows BLE pairing PIN when waiting for pairing.
 
 ### Messages
 
@@ -91,18 +91,19 @@ Live sensor data display (battery voltage, temperature, humidity, pressure, alti
 
 ### Settings
 
-Toggle options: GMT offset (LEFT/RIGHT to adjust -12 to +14, applies to home screen clock and message timestamps), battery voltage display, SNR/RSSI bar, speed HUD, Bluetooth, and GPS.
+Toggle options: GMT offset (LEFT/RIGHT to adjust -12 to +14, applies to clock and message timestamps), battery voltage display (text instead of icon), signal bars (SNR-based with repeater ID), speed HUD, Bluetooth, and GPS.
 
 ### Hibernate
 
 Power off the device.
 
-## Top Bar
+## Status Bar
 
-Always-visible top bar shows node name and battery indicator. Optional overlays:
-- **Battery voltage**: numeric voltage (`4.15V`) instead of battery icon
-- **Speed HUD**: current speed and heading direction when GPS is on and moving
-- **SNR display**: last received packet ID, RSSI, SNR, and age
+14px always-visible top bar with three zones:
+
+- **Left zone**: GPS satellite dish icon with satellite count (when GPS is on), envelope icon with unread message count, speed/compass heading (auto-shown when moving)
+- **Center**: HH:MM clock (when RTC is set)
+- **Right zone**: vertical battery icon (or voltage text if enabled), mute icon (when buzzer is off), signal bars with repeater hex ID (when enabled — uses PocketMesh SNR thresholds, fades after 5 minutes)
 
 ## Companion App Sync
 
