@@ -823,85 +823,8 @@ public:
     // === TOP BAR (always visible) ===
     renderStatusBar(display);
 
-    if (!_page_active) {
-      // === LEVEL 1: CAROUSEL MODE ===
-      const char* page_title = "";
-      char summary_buf[32];
-      const char* page_summary = "";
-
-      switch ((HomePage)_page) {
-        case FIRST: page_title = "Home"; {
-          uint32_t now = _rtc->getCurrentTime();
-          if (now > 1577836800) {
-            uint32_t t = now + _gmt_offset * 3600; int mins = (t/60)%60; int hours = (t/3600)%24;
-            snprintf(summary_buf, sizeof(summary_buf), "%02d:%02d", hours, mins);
-          } else { strcpy(summary_buf, "No time set"); }
-          page_summary = summary_buf;
-        } break;
-        case MESSAGES: page_title = "Messages";
-          snprintf(summary_buf, sizeof(summary_buf), "%d messages", _task->_msg_log_count);
-          page_summary = summary_buf; break;
-        case PRESETS: page_title = "Quick Msg"; page_summary = "Quick messages"; break;
-        case RECENT: page_title = "Recent"; page_summary = "Recently heard"; break;
-        case TRACE: page_title = "Contacts";
-          snprintf(summary_buf, sizeof(summary_buf), "%d contacts", the_mesh.getNumContacts());
-          page_summary = summary_buf; break;
-        case NEARBY: page_title = "Nearby";
-          if (_scan_count > 0) { snprintf(summary_buf, sizeof(summary_buf), "%d found", _scan_count); page_summary = summary_buf; }
-          else page_summary = "Scan nearby";
-          break;
-        case RADIO: page_title = "Radio";
-          snprintf(summary_buf, sizeof(summary_buf), "%.3f SF%d", _node_prefs->freq, _node_prefs->sf);
-          page_summary = summary_buf; break;
-        case PACKETS: page_title = "Packets";
-          snprintf(summary_buf, sizeof(summary_buf), "%d packets", _task->_pkt_log_count);
-          page_summary = summary_buf; break;
-        case ADVERT: page_title = "Advert"; page_summary = "Send advert"; break;
-#if ENV_INCLUDE_GPS == 1
-        case GPS: page_title = "GPS"; {
-          bool gps_on = _task->getGPSState();
-          LocationProvider* nmea = sensors.getLocationProvider();
-          page_summary = gps_on ? (nmea && nmea->isValid() ? "GPS: fix" : "GPS: no fix") : "GPS: off";
-        } break;
-        case NAV: page_title = "Navigation"; page_summary = "Nav & compass"; break;
-#endif
-#if UI_SENSORS_PAGE == 1
-        case SENSORS: page_title = "Sensors"; page_summary = "Sensor data"; break;
-#endif
-        case SETTINGS: page_title = "Settings"; page_summary = "Device settings"; break;
-        case SHUTDOWN: page_title = "Hibernate"; page_summary = "Power off"; break;
-        default: page_title = "?"; page_summary = ""; break;
-      }
-
-      // Page title (centered, with arrows)
-      display.setColor(DisplayDriver::YELLOW);
-      display.setTextSize(2);
-      display.drawTextCentered(display.width() / 2, 24, page_title);
-
-      // Arrow indicators
-      display.setTextSize(1);
-      display.setColor(DisplayDriver::GREEN);
-      display.setCursor(4, 28);
-      display.print("<");
-      display.setCursor(display.width() - 10, 28);
-      display.print(">");
-
-      // Summary line
-      display.setColor(DisplayDriver::LIGHT);
-      display.drawTextCentered(display.width() / 2, 46, page_summary);
-
-      // Page number
-      snprintf(tmp, sizeof(tmp), "%d/%d", _page + 1, (int)HomePage::Count);
-      display.setColor(DisplayDriver::LIGHT);
-      display.drawTextCentered(display.width() / 2, 56, tmp);
-
-      return 5000;
-    }
-
-    // === LEVEL 2: INSIDE PAGE (full screen) ===
-
-    if (_page == HomePage::FIRST) {
-      // === INFO DASHBOARD ===
+    if (!_page_active && _page == HomePage::FIRST) {
+      // === HOME DASHBOARD (shown directly in carousel, no click needed) ===
       display.setTextSize(1);
       int cx = display.width() / 2;
 
@@ -1008,7 +931,86 @@ public:
         display.drawTextCentered(cx, TOP_BAR_H + 40, "BT: Waiting...");
       }
 #endif
-    } else if (_page == HomePage::MESSAGES) {
+
+      // Page number at bottom-right corner
+      snprintf(tmp, sizeof(tmp), "%d/%d", _page + 1, (int)HomePage::Count);
+      display.setColor(DisplayDriver::LIGHT);
+      display.setCursor(display.width() - (int)strlen(tmp) * 6, 56);
+      display.print(tmp);
+
+      return 5000;
+    }
+
+    if (!_page_active) {
+      // === LEVEL 1: CAROUSEL MODE (all pages except Home) ===
+      const char* page_title = "";
+      char summary_buf[32];
+      const char* page_summary = "";
+
+      switch ((HomePage)_page) {
+        case MESSAGES: page_title = "Messages";
+          snprintf(summary_buf, sizeof(summary_buf), "%d messages", _task->_msg_log_count);
+          page_summary = summary_buf; break;
+        case PRESETS: page_title = "Quick Msg"; page_summary = "Quick messages"; break;
+        case RECENT: page_title = "Recent"; page_summary = "Recently heard"; break;
+        case TRACE: page_title = "Contacts";
+          snprintf(summary_buf, sizeof(summary_buf), "%d contacts", the_mesh.getNumContacts());
+          page_summary = summary_buf; break;
+        case NEARBY: page_title = "Nearby";
+          if (_scan_count > 0) { snprintf(summary_buf, sizeof(summary_buf), "%d found", _scan_count); page_summary = summary_buf; }
+          else page_summary = "Scan nearby";
+          break;
+        case RADIO: page_title = "Radio";
+          snprintf(summary_buf, sizeof(summary_buf), "%.3f SF%d", _node_prefs->freq, _node_prefs->sf);
+          page_summary = summary_buf; break;
+        case PACKETS: page_title = "Packets";
+          snprintf(summary_buf, sizeof(summary_buf), "%d packets", _task->_pkt_log_count);
+          page_summary = summary_buf; break;
+        case ADVERT: page_title = "Advert"; page_summary = "Send advert"; break;
+#if ENV_INCLUDE_GPS == 1
+        case GPS: page_title = "GPS"; {
+          bool gps_on = _task->getGPSState();
+          LocationProvider* nmea = sensors.getLocationProvider();
+          page_summary = gps_on ? (nmea && nmea->isValid() ? "GPS: fix" : "GPS: no fix") : "GPS: off";
+        } break;
+        case NAV: page_title = "Navigation"; page_summary = "Nav & compass"; break;
+#endif
+#if UI_SENSORS_PAGE == 1
+        case SENSORS: page_title = "Sensors"; page_summary = "Sensor data"; break;
+#endif
+        case SETTINGS: page_title = "Settings"; page_summary = "Device settings"; break;
+        case SHUTDOWN: page_title = "Hibernate"; page_summary = "Power off"; break;
+        default: page_title = "?"; page_summary = ""; break;
+      }
+
+      // Page title (centered, with arrows)
+      display.setColor(DisplayDriver::YELLOW);
+      display.setTextSize(2);
+      display.drawTextCentered(display.width() / 2, 24, page_title);
+
+      // Arrow indicators
+      display.setTextSize(1);
+      display.setColor(DisplayDriver::GREEN);
+      display.setCursor(4, 28);
+      display.print("<");
+      display.setCursor(display.width() - 10, 28);
+      display.print(">");
+
+      // Summary line
+      display.setColor(DisplayDriver::LIGHT);
+      display.drawTextCentered(display.width() / 2, 46, page_summary);
+
+      // Page number
+      snprintf(tmp, sizeof(tmp), "%d/%d", _page + 1, (int)HomePage::Count);
+      display.setColor(DisplayDriver::LIGHT);
+      display.drawTextCentered(display.width() / 2, 56, tmp);
+
+      return 5000;
+    }
+
+    // === LEVEL 2: INSIDE PAGE (full screen) ===
+
+    if (_page == HomePage::MESSAGES) {
       display.setTextSize(1);
 
       if (_msg_detail && _task->_msg_log_count > 0) {
@@ -3079,6 +3081,7 @@ public:
         return true;
       }
       if (c == KEY_ENTER) {
+        if (_page == HomePage::FIRST) return true;  // Home dashboard shown directly, no level 2
         _page_active = true;
         return true;
       }
