@@ -134,6 +134,7 @@ public:
   bool _preset_add_mode;  // true = compose will save as preset instead of sending
 
   void gotoHomeScreen() { setCurrScreen(home); }
+  void gotoMessagesScreen();
   void gotoComposeScreen();
   void gotoContactSelect(bool gps_mode = false);
   void gotoChannelSelect();

@@ -233,7 +233,9 @@ class HomeScreen : public UIScreen {
   bool _needs_fast_refresh; // true when any visible age < 60s
   float _max_speed;
   float _odometer;          // miles traveled
-  unsigned long _odo_last;  // last odometer update time
+  unsigned long _odo_last;  // last odometer sample time
+  long _odo_last_lat;       // last position latitude (microdegrees)
+  long _odo_last_lon;       // last position longitude (microdegrees)
   bool _nav_screen_lock;
   // Waypoint navigation state
   bool _nav_has_waypoint;
@@ -243,9 +245,13 @@ class HomeScreen : public UIScreen {
   uint8_t _settings_sel;
   uint8_t _ct_filter;  // 0=All, 1=Contacts, 2=Repeaters
   // Message channel filter
+  int _msg_vscroll;             // first visible display line in multi-line mode
   uint8_t _msg_filter;          // 0=All, 1+=specific channel filter index
   int _msg_filter_channels[8];  // channel_idx values for each filter option
   int _msg_filter_count;        // total filter options (including "All")
+  char _msg_filter_dm_names[4][24]; // DM contact names for filter tabs (negative sentinel entries)
+  bool _msg_compose_menu;           // true when showing quick-send overlay
+  uint8_t _msg_compose_sel;         // 0=Keyboard, 1..N=preset messages
   AdvertPath recent[UI_RECENT_LIST_SIZE];
 
   // Cached contact info (persists across page visits)
@@ -355,20 +361,41 @@ class HomeScreen : public UIScreen {
   uint8_t _scan_action_count;
   uint8_t _scan_detail_scroll;
 
-  // Build message filter options by scanning message log for unique channel_idx values
+  // Build message filter options by scanning message log for unique channel_idx values and DM contacts
   void rebuildMsgFilters() {
     _msg_filter_count = 1;  // index 0 = "All"
     _msg_filter_channels[0] = -99;  // sentinel for "All"
+    int dm_count = 0;
     for (int i = 0; i < _task->_msg_log_count && _msg_filter_count < 8; i++) {
       int buf_idx = (_task->_msg_log_next - 1 - i + MSG_LOG_SIZE) % MSG_LOG_SIZE;
-      int ch = _task->_msg_log[buf_idx].channel_idx;
-      if (ch < 0) continue;  // DM, skip (only in All view)
-      bool found = false;
-      for (int j = 1; j < _msg_filter_count; j++) {
-        if (_msg_filter_channels[j] == ch) { found = true; break; }
-      }
-      if (!found) {
-        _msg_filter_channels[_msg_filter_count++] = ch;
+      auto& entry = _task->_msg_log[buf_idx];
+      int ch = entry.channel_idx;
+      if (ch >= 0) {
+        // Channel message
+        bool found = false;
+        for (int j = 1; j < _msg_filter_count; j++) {
+          if (_msg_filter_channels[j] == ch) { found = true; break; }
+        }
+        if (!found) {
+          _msg_filter_channels[_msg_filter_count++] = ch;
+        }
+      } else if (ch < 0 && entry.contact_name[0] != '\0' && dm_count < 4) {
+        // DM message — check if this contact is already in filters
+        bool found = false;
+        for (int j = 1; j < _msg_filter_count; j++) {
+          if (_msg_filter_channels[j] <= -2) {
+            int dm_idx = -_msg_filter_channels[j] - 2;
+            if (strcmp(_msg_filter_dm_names[dm_idx], entry.contact_name) == 0) {
+              found = true; break;
+            }
+          }
+        }
+        if (!found && _msg_filter_count < 8) {
+          strncpy(_msg_filter_dm_names[dm_count], entry.contact_name, 23);
+          _msg_filter_dm_names[dm_count][23] = '\0';
+          _msg_filter_channels[_msg_filter_count++] = -(dm_count + 2);  // -2, -3, -4, -5
+          dm_count++;
+        }
       }
     }
     if (_msg_filter >= _msg_filter_count) _msg_filter = 0;
@@ -378,7 +405,17 @@ class HomeScreen : public UIScreen {
   bool msgPassesFilter(int log_index) {
     if (_msg_filter == 0) return true;  // "All" shows everything
     int buf_idx = (_task->_msg_log_next - 1 - log_index + MSG_LOG_SIZE) % MSG_LOG_SIZE;
-    return _task->_msg_log[buf_idx].channel_idx == _msg_filter_channels[_msg_filter];
+    auto& entry = _task->_msg_log[buf_idx];
+    int fval = _msg_filter_channels[_msg_filter];
+    if (fval >= 0) {
+      return entry.channel_idx == fval;  // channel filter
+    }
+    // DM filter: match by contact_name
+    int dm_idx = -fval - 2;
+    if (dm_idx >= 0 && dm_idx < 4) {
+      return entry.channel_idx < 0 && strcmp(entry.contact_name, _msg_filter_dm_names[dm_idx]) == 0;
+    }
+    return false;
   }
 
   // Count messages that pass the current filter
@@ -390,10 +427,10 @@ class HomeScreen : public UIScreen {
     return count;
   }
 
-  // Get the log_index of the nth filtered message (0-based)
+  // Get the log_index of the nth filtered message (0-based, oldest first)
   int getFilteredMsgIndex(int nth) {
     int count = 0;
-    for (int i = 0; i < _task->_msg_log_count; i++) {
+    for (int i = _task->_msg_log_count - 1; i >= 0; i--) {
       if (msgPassesFilter(i)) {
         if (count == nth) return i;
         count++;
@@ -541,10 +578,10 @@ class HomeScreen : public UIScreen {
 public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, SensorManager* sensors, NodePrefs* node_prefs)
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
-       _preset_sel(0), _msg_sel(0), _msg_sel_prev(0xFF), _msg_scroll_px(0),
+       _preset_sel(0), _msg_sel(0xFF), _msg_sel_prev(0xFF), _msg_scroll_px(0),
        _msg_detail(false), _msg_detail_scroll(0), _msg_reply_menu(false), _msg_reply_sel(0), _shutdown_init(false), _show_voltage(false), _show_speed(false),
-       _show_snr(false), _pkt_sel(0), _pkt_detail(false), _pkt_detail_scroll(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _nav_screen_lock(false), _nav_has_waypoint(false),
-       _page_active(false), _settings_sel(0), _ct_filter(0), _msg_filter(0), _msg_filter_count(0),
+       _show_snr(false), _pkt_sel(0), _pkt_detail(false), _pkt_detail_scroll(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _odo_last_lat(0), _odo_last_lon(0), _nav_screen_lock(false), _nav_has_waypoint(false),
+       _page_active(false), _settings_sel(0), _ct_filter(0), _msg_vscroll(0), _msg_filter(0), _msg_filter_count(0), _msg_compose_menu(false), _msg_compose_sel(0),
        _preset_target_choosing(false), _preset_target_sel(0), _preset_edit_mode(false), _preset_edit_sel(0),
        _ct_sel(0), _ct_count(0), _ct_action(false), _ct_action_sel(0), _ct_action_count(0), _ct_detail_scroll(0),
        _ct_path_pending(false), _ct_path_found(false),
@@ -556,7 +593,7 @@ public:
        sensors_lpp(200) { memset(_ct_cache, 0, sizeof(_ct_cache)); memset(_scan_results, 0, sizeof(_scan_results)); }
 
   bool isUserBusy() const {
-    return _page_active || _msg_detail || _pkt_detail || _ct_action || _ct_path_pending || _ct_telem_pending ||
+    return _page_active || _msg_detail || _msg_compose_menu || _pkt_detail || _ct_action || _ct_path_pending || _ct_telem_pending ||
            _ct_telem_done || _ct_status_pending || _ct_status_done ||
            _ct_gps_pending || _ct_gps_done || _ct_gps_no_fix ||
            _preset_target_choosing || _preset_edit_mode || _scan_action;
@@ -1155,21 +1192,184 @@ public:
           snprintf(hdr, sizeof(hdr), "-- All (%d/%d) --",
                    filtered_total > 0 ? _msg_sel + 1 : 0, filtered_total);
         } else {
-          ChannelDetails cd;
-          const char* ch_name = "Ch?";
-          if (the_mesh.getChannel(_msg_filter_channels[_msg_filter], cd)) {
-            ch_name = cd.name;
+          int fval = _msg_filter_channels[_msg_filter];
+          if (fval >= 0) {
+            // Channel filter
+            ChannelDetails cd;
+            const char* ch_name = "Ch?";
+            if (the_mesh.getChannel(fval, cd)) {
+              ch_name = cd.name;
+            }
+            snprintf(hdr, sizeof(hdr), "-- %s%s (%d/%d) --",
+                     ch_name[0] == '#' ? "" : "#", ch_name,
+                     filtered_total > 0 ? _msg_sel + 1 : 0, filtered_total);
+          } else {
+            // DM filter
+            int dm_idx = -fval - 2;
+            const char* dm_name = (dm_idx >= 0 && dm_idx < 4) ? _msg_filter_dm_names[dm_idx] : "?";
+            snprintf(hdr, sizeof(hdr), "-- DM:%s (%d/%d) --",
+                     dm_name, filtered_total > 0 ? _msg_sel + 1 : 0, filtered_total);
           }
-          snprintf(hdr, sizeof(hdr), "-- %s%s (%d/%d) --",
-                   ch_name[0] == '#' ? "" : "#", ch_name,
-                   filtered_total > 0 ? _msg_sel + 1 : 0, filtered_total);
         }
         display.drawTextCentered(display.width() / 2, TOP_BAR_H, hdr);
 
-        if (filtered_total == 0) {
+        if (_msg_compose_menu) {
+          // === Quick-send compose menu overlay ===
+          // Build list of non-empty presets
+          int preset_count = 0;
+          int preset_indices[PRESET_MSG_COUNT];
+          for (int i = 0; i < PRESET_MSG_COUNT; i++) {
+            if (i == PRESET_GPS_INDEX) continue;  // skip GPS slot
+            if (preset_messages[i] && preset_messages[i][0] != '\0') {
+              preset_indices[preset_count++] = i;
+            }
+          }
+          int total_items = 1 + preset_count;  // Keyboard + presets
+          int visible = 4;
+          int scroll_top = 0;
+          if (_msg_compose_sel >= visible) scroll_top = _msg_compose_sel - visible + 1;
+          if (scroll_top > total_items - visible) scroll_top = total_items - visible;
+          if (scroll_top < 0) scroll_top = 0;
+          int y = TOP_BAR_H + 11;
+          for (int v = scroll_top; v < scroll_top + visible && v < total_items; v++, y += 11) {
+            bool is_sel = (v == (int)_msg_compose_sel);
+            display.setColor(is_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+            if (is_sel) {
+              display.setCursor(0, y);
+              display.print(">");
+            }
+            const char* label;
+            if (v == 0) {
+              label = "[Keyboard]";
+            } else {
+              label = preset_messages[preset_indices[v - 1]];
+            }
+            display.drawTextEllipsized(8, y, display.width() - 8, label);
+          }
+        } else if (filtered_total == 0) {
           display.setColor(DisplayDriver::LIGHT);
           display.drawTextCentered(display.width() / 2, TOP_BAR_H + 24, "No messages yet");
+        } else if (_msg_filter > 0) {
+          // === Multi-line rendering for filtered views ===
+          // Reset vscroll when selection changes
+          if (_msg_sel != _msg_sel_prev) {
+            _msg_sel_prev = _msg_sel;
+            // Ensure selected message is visible by adjusting _msg_vscroll below
+          }
+          int char_w = display.getTextWidth("A");
+          int avail_w = display.width() - 12; // text area width (after indent)
+          int chars_per_line = (char_w > 0) ? avail_w / char_w : 20;
+          int indent_px = 12;  // continuation line indent
+
+          // Build display lines: walk messages from top, computing line counts
+          // First compute which display line the selected message starts at
+          int display_lines = 4;  // visible lines on screen
+          int sel_start_line = 0;
+          for (int v = 0; v < (int)_msg_sel && v < filtered_total; v++) {
+            int log_idx = getFilteredMsgIndex(v);
+            if (log_idx < 0) break;
+            int buf_idx = (_task->_msg_log_next - 1 - log_idx + MSG_LOG_SIZE) % MSG_LOG_SIZE;
+            auto& entry = _task->_msg_log[buf_idx];
+            char line[104];
+            snprintf(line, sizeof(line), "%s: %s", entry.origin, entry.text);
+            int line_len = strlen(line);
+            // First line has full width, continuation lines have reduced width
+            int first_chars = (avail_w - 0) / char_w;  // no indent on first line
+            int cont_chars = (avail_w - indent_px) / char_w;
+            if (first_chars < 1) first_chars = 1;
+            if (cont_chars < 1) cont_chars = 1;
+            int msg_lines = 1;
+            if (line_len > first_chars) {
+              int remaining = line_len - first_chars;
+              msg_lines += (remaining + cont_chars - 1) / cont_chars;
+            }
+            sel_start_line += msg_lines;
+          }
+          // Adjust vscroll to keep selected message visible
+          if (sel_start_line < _msg_vscroll) _msg_vscroll = sel_start_line;
+          // Compute lines for selected message to ensure its end is visible
+          {
+            int log_idx = getFilteredMsgIndex(_msg_sel);
+            if (log_idx >= 0) {
+              int buf_idx = (_task->_msg_log_next - 1 - log_idx + MSG_LOG_SIZE) % MSG_LOG_SIZE;
+              auto& entry = _task->_msg_log[buf_idx];
+              char line[104];
+              snprintf(line, sizeof(line), "%s: %s", entry.origin, entry.text);
+              int line_len = strlen(line);
+              int first_chars = avail_w / char_w;
+              int cont_chars = (avail_w - indent_px) / char_w;
+              if (first_chars < 1) first_chars = 1;
+              if (cont_chars < 1) cont_chars = 1;
+              int msg_lines = 1;
+              if (line_len > first_chars) {
+                int remaining = line_len - first_chars;
+                msg_lines += (remaining + cont_chars - 1) / cont_chars;
+              }
+              int sel_end_line = sel_start_line + msg_lines;
+              if (sel_end_line > _msg_vscroll + display_lines)
+                _msg_vscroll = sel_end_line - display_lines;
+            }
+          }
+          if (_msg_vscroll < 0) _msg_vscroll = 0;
+
+          // Now render: walk messages, skip display lines before _msg_vscroll
+          int cur_dline = 0;
+          int y = TOP_BAR_H + 11;
+          int lines_drawn = 0;
+          for (int v = 0; v < filtered_total && lines_drawn < display_lines; v++) {
+            int log_idx = getFilteredMsgIndex(v);
+            if (log_idx < 0) break;
+            int buf_idx = (_task->_msg_log_next - 1 - log_idx + MSG_LOG_SIZE) % MSG_LOG_SIZE;
+            auto& entry = _task->_msg_log[buf_idx];
+            char line[104];
+            snprintf(line, sizeof(line), "%s: %s", entry.origin, entry.text);
+            int line_len = strlen(line);
+            int first_chars = avail_w / char_w;
+            int cont_chars = (avail_w - indent_px) / char_w;
+            if (first_chars < 1) first_chars = 1;
+            if (cont_chars < 1) cont_chars = 1;
+            int msg_lines = 1;
+            if (line_len > first_chars) {
+              int remaining = line_len - first_chars;
+              msg_lines += (remaining + cont_chars - 1) / cont_chars;
+            }
+            bool is_sel = (v == (int)_msg_sel);
+            display.setColor(is_sel ? DisplayDriver::YELLOW :
+                             (entry.is_sent ? DisplayDriver::YELLOW : DisplayDriver::GREEN));
+            // Render each sub-line of this message
+            int char_pos = 0;
+            for (int sl = 0; sl < msg_lines && lines_drawn < display_lines; sl++) {
+              if (cur_dline >= _msg_vscroll) {
+                int x_off = (sl == 0) ? 0 : indent_px;
+                int max_ch = (sl == 0) ? first_chars : cont_chars;
+                // Draw selection marker on first visible line of selected msg
+                if (is_sel && sl == 0) {
+                  display.setCursor(0, y);
+                  display.print(">");
+                }
+                // Extract substring
+                char sub[104];
+                int copy_len = line_len - char_pos;
+                if (copy_len > max_ch) copy_len = max_ch;
+                memcpy(sub, &line[char_pos], copy_len);
+                sub[copy_len] = '\0';
+                display.setCursor(x_off + (is_sel && sl == 0 ? 8 : (sl == 0 ? 8 : 0)), y);
+                display.drawTextEllipsized(x_off + (sl == 0 ? 8 : 0), y,
+                                           (sl == 0 ? avail_w : avail_w - indent_px + 12), sub);
+                y += 11;
+                lines_drawn++;
+              }
+              int max_ch = (sl == 0) ? first_chars : cont_chars;
+              char_pos += max_ch;
+              cur_dline++;
+            }
+            // Skip remaining lines if message extends past visible area
+            if (cur_dline < _msg_vscroll) {
+              // This message was entirely above the visible area, skip it
+            }
+          }
         } else {
+          // === Original single-line rendering for "All" view ===
           // Reset scroll when selection changes
           if (_msg_sel != _msg_sel_prev) {
             _msg_scroll_px = 0;
@@ -2175,13 +2375,29 @@ public:
         float speed_mph = nmea->getSpeed() / 1000.0f * 1.15078f;
         // Track max speed
         if (speed_mph > _max_speed) _max_speed = speed_mph;
-        // Odometer: accumulate distance (speed * elapsed time)
+        // Odometer: accumulate distance using GPS position deltas (haversine)
         unsigned long now_ms = millis();
-        if (_odo_last > 0 && speed_mph > 1.0f) {
-          float elapsed_hrs = (now_ms - _odo_last) / 3600000.0f;
-          _odometer += speed_mph * elapsed_hrs;
+        if (speed_mph > 1.0f && (_odo_last == 0 || (now_ms - _odo_last) >= 2000)) {
+          long cur_lat = nmea->getLatitude();   // microdegrees
+          long cur_lon = nmea->getLongitude();
+          if (_odo_last_lat != 0 || _odo_last_lon != 0) {
+            // Haversine distance in miles
+            float lat1 = _odo_last_lat / 1000000.0f * 3.14159f / 180.0f;
+            float lat2 = cur_lat / 1000000.0f * 3.14159f / 180.0f;
+            float dlat = lat2 - lat1;
+            float dlon = (cur_lon - _odo_last_lon) / 1000000.0f * 3.14159f / 180.0f;
+            float a = sinf(dlat / 2) * sinf(dlat / 2) +
+                      cosf(lat1) * cosf(lat2) * sinf(dlon / 2) * sinf(dlon / 2);
+            float c = 2.0f * atan2f(sqrtf(a), sqrtf(1.0f - a));
+            float dist_mi = 3958.8f * c;  // Earth radius in miles
+            if (dist_mi < 0.5f) {  // sanity cap: skip GPS jumps
+              _odometer += dist_mi;
+            }
+          }
+          _odo_last_lat = cur_lat;
+          _odo_last_lon = cur_lon;
+          _odo_last = now_ms;
         }
-        _odo_last = now_ms;
         // Course in degrees (getCourse returns thousandths of degrees)
         float course_deg = nmea->getCourse() / 1000.0f;
         bool moving = speed_mph > 2.0f;
@@ -3245,27 +3461,139 @@ public:
         }
         return true; // consume all keys in detail mode
       }
+      // Quick-send compose menu handling
+      if (_msg_compose_menu) {
+        // Count non-empty presets
+        int preset_count = 0;
+        int preset_indices[PRESET_MSG_COUNT];
+        for (int i = 0; i < PRESET_MSG_COUNT; i++) {
+          if (i == PRESET_GPS_INDEX) continue;
+          if (preset_messages[i] && preset_messages[i][0] != '\0') {
+            preset_indices[preset_count++] = i;
+          }
+        }
+        int total_items = 1 + preset_count;
+        if (c == KEY_UP) {
+          if (_msg_compose_sel > 0) _msg_compose_sel--;
+          return true;
+        }
+        if (c == KEY_DOWN) {
+          if (_msg_compose_sel < total_items - 1) _msg_compose_sel++;
+          return true;
+        }
+        if (c == KEY_CANCEL) {
+          _msg_compose_menu = false;
+          return true;
+        }
+        if (c == KEY_ENTER) {
+          if (_msg_compose_sel == 0) {
+            // Keyboard: open full compose pre-targeted
+            int fval = _msg_filter_channels[_msg_filter];
+            if (fval >= 0) {
+              ChannelDetails cd;
+              if (the_mesh.getChannel(fval, cd)) {
+                _msg_compose_menu = false;
+                _task->startChannelCompose(fval, cd.name);
+              } else {
+                _task->showAlert("No channel", 800);
+              }
+            } else {
+              // DM target
+              int dm_idx = -fval - 2;
+              const char* dm_name = (dm_idx >= 0 && dm_idx < 4) ? _msg_filter_dm_names[dm_idx] : NULL;
+              if (dm_name) {
+                ContactInfo ci;
+                int n = the_mesh.getNumContacts();
+                bool found = false;
+                for (int i = 0; i < n; i++) {
+                  if (the_mesh.getContactByIdx(i, ci) && strcmp(ci.name, dm_name) == 0) {
+                    _msg_compose_menu = false;
+                    _task->startDMCompose(ci);
+                    found = true;
+                    break;
+                  }
+                }
+                if (!found) _task->showAlert("Contact not found", 800);
+              }
+            }
+            _msg_compose_menu = false;
+            return true;
+          } else {
+            // Preset: send immediately
+            int pi = preset_indices[_msg_compose_sel - 1];
+            const char* text = preset_messages[pi];
+            int fval = _msg_filter_channels[_msg_filter];
+            if (fval >= 0) {
+              // Channel send
+              ChannelDetails cd;
+              if (the_mesh.getChannel(fval, cd)) {
+                uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
+                bool ok = the_mesh.sendGroupMessage(ts, cd.channel,
+                            the_mesh.getNodePrefs()->node_name, text, strlen(text));
+                the_mesh.queueSentChannelMessage(fval, ts, text, strlen(text));
+                _task->addToMsgLog("You", text, true, 0, fval, NULL, NULL, the_mesh.getLastSentHash());
+                _task->notify(UIEventType::ack);
+                _task->showAlert(ok ? "Sent!" : "Send failed", 800);
+              } else {
+                _task->showAlert("No channel", 800);
+              }
+            } else {
+              // DM send
+              int dm_idx = -fval - 2;
+              const char* dm_name = (dm_idx >= 0 && dm_idx < 4) ? _msg_filter_dm_names[dm_idx] : NULL;
+              if (dm_name) {
+                ContactInfo ci;
+                int n = the_mesh.getNumContacts();
+                bool found = false;
+                for (int i = 0; i < n; i++) {
+                  if (the_mesh.getContactByIdx(i, ci) && strcmp(ci.name, dm_name) == 0) {
+                    uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
+                    uint32_t expected_ack = 0;
+                    uint32_t est_timeout = 0;
+                    int result = the_mesh.sendMessage(ci, ts, 0, text, expected_ack, est_timeout);
+                    the_mesh.registerExpectedAck(expected_ack, NULL);
+                    _task->addToMsgLog("You", text, true, 0, -1, ci.name, NULL, the_mesh.getLastSentHash(), expected_ack);
+                    _task->notify(UIEventType::ack);
+                    _task->showAlert(result > 0 ? "DM Sent!" : "DM failed", 800);
+                    found = true;
+                    break;
+                  }
+                }
+                if (!found) _task->showAlert("Contact not found", 800);
+              }
+            }
+            _msg_compose_menu = false;
+            return true;
+          }
+        }
+        return true;  // consume all keys in compose menu
+      }
       // CANCEL: back to carousel from message list
       if (c == KEY_CANCEL) {
         _page_active = false;
         _msg_filter = 0;  // reset filter on exit
+        _msg_compose_menu = false;
         return true;
       }
       // LEFT/RIGHT: cycle message filter
       if (c == KEY_LEFT) {
         rebuildMsgFilters();
         _msg_filter = (_msg_filter + _msg_filter_count - 1) % _msg_filter_count;
-        _msg_sel = 0;
+        _msg_sel = 0xFF;  // clamp to newest (bottom) on render
         _msg_sel_prev = 0xFF;
         _msg_scroll_px = 0;
+        _msg_vscroll = 0;
+        _msg_compose_menu = false;
         return true;
       }
       if (c == KEY_RIGHT) {
         rebuildMsgFilters();
         _msg_filter = (_msg_filter + 1) % _msg_filter_count;
-        _msg_sel = 0;
+        _msg_sel = 0xFF;  // clamp to newest (bottom) on render
         _msg_sel_prev = 0xFF;
         _msg_scroll_px = 0;
+        _msg_vscroll = 0;
+        _msg_compose_menu = false;
         return true;
       }
       {
@@ -3276,7 +3604,12 @@ public:
             return true;
           }
           if (c == KEY_DOWN) {
-            if (_msg_sel < filtered_total - 1) _msg_sel++;
+            if (_msg_sel < filtered_total - 1) {
+              _msg_sel++;
+            } else if (_msg_filter > 0) {
+              _msg_compose_menu = true;
+              _msg_compose_sel = 0;
+            }
             return true;
           }
           if (c == KEY_ENTER) {
@@ -3285,6 +3618,11 @@ public:
             _path_sel = -1;
             return true;
           }
+        } else if (_msg_filter > 0 && c == KEY_DOWN) {
+          // Allow compose from empty filtered view
+          _msg_compose_menu = true;
+          _msg_compose_sel = 0;
+          return true;
         }
       }
       return false;
@@ -3468,6 +3806,8 @@ public:
         _max_speed = 0;
         _odometer = 0;
         _odo_last = 0;
+        _odo_last_lat = 0;
+        _odo_last_lon = 0;
         _task->showAlert("Trip reset", 800);
       }
       return true;
@@ -3870,7 +4210,7 @@ public:
           }
         }
         reset();
-        _task->gotoHomeScreen();
+        _task->gotoMessagesScreen();
         return true;
       }
       if (ch == '\x02') {
@@ -4296,6 +4636,19 @@ void UITask::setCurrScreen(UIScreen* c) {
   _next_refresh = 100;
 }
 
+void UITask::gotoMessagesScreen() {
+  HomeScreen* hs = (HomeScreen*)home;
+  hs->_page = HomeScreen::MESSAGES;
+  hs->_page_active = true;
+  hs->_msg_sel = 0xFF;  // clamp to newest (bottom) on render
+  hs->_msg_sel_prev = 0xFF;
+  hs->_msg_scroll_px = 0;
+  hs->_msg_vscroll = 0;
+  hs->_msg_filter = 0;
+  hs->_msg_compose_menu = false;
+  setCurrScreen(home);
+}
+
 void UITask::gotoComposeScreen() {
   ((ComposeScreen*)compose)->reset();
   setCurrScreen(compose);
@@ -4340,6 +4693,8 @@ void UITask::sendGPSDM(const ContactInfo& contact) {
     addToMsgLog("You", gps_text, true, 0, -1, contact.name, NULL, the_mesh.getLastSentHash(), expected_ack);
     notify(UIEventType::ack);
     showAlert(result > 0 ? "GPS DM Sent!" : "GPS DM failed", 800);
+    gotoMessagesScreen();
+    return;
   } else {
     showAlert("No GPS fix", 800);
   }
@@ -4368,7 +4723,7 @@ void UITask::sendPresetToChannel(int channel_idx) {
     showAlert("No channel", 800);
   }
   _preset_pending = false;
-  gotoHomeScreen();
+  gotoMessagesScreen();
 }
 
 void UITask::sendPresetDM(const ContactInfo& contact) {
@@ -4386,7 +4741,7 @@ void UITask::sendPresetDM(const ContactInfo& contact) {
   notify(UIEventType::ack);
   showAlert(result > 0 ? "DM Sent!" : "DM failed", 800);
   _preset_pending = false;
-  gotoHomeScreen();
+  gotoMessagesScreen();
 }
 
 void UITask::logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4, uint8_t route_type, uint8_t payload_len) {
