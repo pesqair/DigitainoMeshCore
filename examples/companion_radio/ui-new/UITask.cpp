@@ -1897,6 +1897,7 @@ public:
             }
           } else if (_scan_tag != 0) {
             display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "No results");
+            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 34, "RIGHT to rescan");
           } else {
             display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "ENTER to scan");
           }
@@ -2974,51 +2975,26 @@ public:
         _page_active = false;
         return true;
       }
-      if (c == KEY_ENTER) {
-        if (_scan_count == 0 && !_scan_active) {
-          // Initiate scan
-          _scan_tag = random(1, 0x7FFFFFFF);
-          the_mesh.startDiscoveryScan(_scan_tag);
-          _scan_active = true;
-          _scan_timeout = millis() + 8000;
-          _scan_count = 0;
-          memset(_scan_results, 0, sizeof(_scan_results));
-          _scan_sel = 0;
-          return true;
-        }
-        if (_scan_count > 0 && !_scan_active) {
-          // If scan done: ENTER on result opens action or rescans
-          ScanResult& sr = _scan_results[_scan_sel];
-          if (sr.valid) {
-            if (sr.in_contacts) {
-              _scan_action = true;
-              _scan_action_sel = 0;
-              _scan_detail_scroll = 0;
-            } else {
-              _task->showAlert("Not in contacts", 1000);
-            }
-            return true;
-          }
-          // If at end of list with no selection, rescan
-          _scan_tag = random(1, 0x7FFFFFFF);
-          the_mesh.startDiscoveryScan(_scan_tag);
-          _scan_active = true;
-          _scan_timeout = millis() + 8000;
-          _scan_count = 0;
-          memset(_scan_results, 0, sizeof(_scan_results));
-          _scan_sel = 0;
-          return true;
-        }
-        if (_scan_active) {
-          // Rescan while scanning
-          _scan_tag = random(1, 0x7FFFFFFF);
-          the_mesh.startDiscoveryScan(_scan_tag);
-          _scan_active = true;
-          _scan_timeout = millis() + 8000;
-          _scan_count = 0;
-          memset(_scan_results, 0, sizeof(_scan_results));
-          _scan_sel = 0;
-          return true;
+      // RIGHT or ENTER (when empty): start/restart scan
+      if (c == KEY_RIGHT || (c == KEY_ENTER && _scan_count == 0)) {
+        _scan_tag = random(1, 0x7FFFFFFF);
+        the_mesh.startDiscoveryScan(_scan_tag);
+        _scan_active = true;
+        _scan_timeout = millis() + 8000;
+        _scan_count = 0;
+        memset(_scan_results, 0, sizeof(_scan_results));
+        _scan_sel = 0;
+        return true;
+      }
+      // ENTER on a result: open action menu
+      if (c == KEY_ENTER && _scan_count > 0) {
+        ScanResult& sr = _scan_results[_scan_sel];
+        if (sr.valid && sr.in_contacts) {
+          _scan_action = true;
+          _scan_action_sel = 0;
+          _scan_detail_scroll = 0;
+        } else {
+          _task->showAlert("Not in contacts", 1000);
         }
         return true;
       }
