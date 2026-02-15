@@ -135,6 +135,7 @@ public:
 
   void gotoHomeScreen() { setCurrScreen(home); }
   void gotoMessagesScreen();
+  void gotoMessagesScreenFiltered(int channel_idx, const char* dm_name);
   void gotoComposeScreen();
   void gotoContactSelect(bool gps_mode = false);
   void gotoChannelSelect();

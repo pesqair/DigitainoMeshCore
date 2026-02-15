@@ -20,10 +20,10 @@ Message count, date/time, and connection status. Shows BLE pairing PIN when wait
 
 Scrollable message log with channel filtering (LEFT/RIGHT to cycle filters). Messages are displayed oldest-at-top / newest-at-bottom. Delivery status, repeat counts, and last-hop hash prefixes are shown. Prefix stays fixed while message text scrolls horizontally on selection.
 
-**Quick-Send Compose** (DOWN past newest message in a filtered channel/DM tab):
-- Opens an overlay with `[Keyboard]` (full compose) and preset quick messages
-- Selecting `[Keyboard]` opens the compose screen pre-targeted to the current channel or DM
-- Selecting a preset sends it immediately without leaving the message view
+**Quick-Send Compose** (DOWN past newest message):
+- In a filtered channel/DM tab: opens an overlay with `[Keyboard]` (full compose) and preset quick messages for one-tap sending
+- In the "All" tab: opens a Channel/DM chooser, then proceeds to channel or contact selection and compose
+- After sending, the message list returns to the matching channel or DM filter tab automatically
 
 **Message Detail** (ENTER on a message):
 - Full word-wrapped text, timestamp, sender/recipient, hop count

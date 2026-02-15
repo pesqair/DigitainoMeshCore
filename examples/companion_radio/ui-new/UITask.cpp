@@ -252,6 +252,8 @@ class HomeScreen : public UIScreen {
   char _msg_filter_dm_names[4][24]; // DM contact names for filter tabs (negative sentinel entries)
   bool _msg_compose_menu;           // true when showing quick-send overlay
   uint8_t _msg_compose_sel;         // 0=Keyboard, 1..N=preset messages
+  bool _msg_target_menu;            // true when showing Channel/DM chooser (All tab)
+  uint8_t _msg_target_sel;          // 0=Channel, 1=DM
   AdvertPath recent[UI_RECENT_LIST_SIZE];
 
   // Cached contact info (persists across page visits)
@@ -581,7 +583,7 @@ public:
        _preset_sel(0), _msg_sel(0xFF), _msg_sel_prev(0xFF), _msg_scroll_px(0),
        _msg_detail(false), _msg_detail_scroll(0), _msg_reply_menu(false), _msg_reply_sel(0), _shutdown_init(false), _show_voltage(false), _show_speed(false),
        _show_snr(false), _pkt_sel(0), _pkt_detail(false), _pkt_detail_scroll(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _odo_last_lat(0), _odo_last_lon(0), _nav_screen_lock(false), _nav_has_waypoint(false),
-       _page_active(false), _settings_sel(0), _ct_filter(0), _msg_vscroll(0), _msg_filter(0), _msg_filter_count(0), _msg_compose_menu(false), _msg_compose_sel(0),
+       _page_active(false), _settings_sel(0), _ct_filter(0), _msg_vscroll(0), _msg_filter(0), _msg_filter_count(0), _msg_compose_menu(false), _msg_compose_sel(0), _msg_target_menu(false), _msg_target_sel(0),
        _preset_target_choosing(false), _preset_target_sel(0), _preset_edit_mode(false), _preset_edit_sel(0),
        _ct_sel(0), _ct_count(0), _ct_action(false), _ct_action_sel(0), _ct_action_count(0), _ct_detail_scroll(0),
        _ct_path_pending(false), _ct_path_found(false),
@@ -593,7 +595,7 @@ public:
        sensors_lpp(200) { memset(_ct_cache, 0, sizeof(_ct_cache)); memset(_scan_results, 0, sizeof(_scan_results)); }
 
   bool isUserBusy() const {
-    return _page_active || _msg_detail || _msg_compose_menu || _pkt_detail || _ct_action || _ct_path_pending || _ct_telem_pending ||
+    return _page_active || _msg_detail || _msg_compose_menu || _msg_target_menu || _pkt_detail || _ct_action || _ct_path_pending || _ct_telem_pending ||
            _ct_telem_done || _ct_status_pending || _ct_status_done ||
            _ct_gps_pending || _ct_gps_done || _ct_gps_no_fix ||
            _preset_target_choosing || _preset_edit_mode || _scan_action;
@@ -1367,6 +1369,19 @@ public:
             if (cur_dline < _msg_vscroll) {
               // This message was entirely above the visible area, skip it
             }
+          }
+        } else if (_msg_target_menu) {
+          // === Channel/DM target chooser overlay (All tab) ===
+          int y = TOP_BAR_H + 16;
+          const char* opts[2] = { "[Channel...]", "[DM...]" };
+          for (int i = 0; i < 2; i++, y += 14) {
+            display.setColor(i == _msg_target_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+            if (i == _msg_target_sel) {
+              display.setCursor(0, y);
+              display.print(">");
+            }
+            display.setCursor(8, y);
+            display.print(opts[i]);
           }
         } else {
           // === Original single-line rendering for "All" view ===
@@ -3568,11 +3583,33 @@ public:
         }
         return true;  // consume all keys in compose menu
       }
+      // Channel/DM target chooser (All tab)
+      if (_msg_target_menu) {
+        if (c == KEY_UP || c == KEY_DOWN) {
+          _msg_target_sel = 1 - _msg_target_sel;
+          return true;
+        }
+        if (c == KEY_CANCEL) {
+          _msg_target_menu = false;
+          return true;
+        }
+        if (c == KEY_ENTER) {
+          _msg_target_menu = false;
+          if (_msg_target_sel == 0) {
+            _task->gotoChannelSelect();
+          } else {
+            _task->gotoContactSelect(false);
+          }
+          return true;
+        }
+        return true;
+      }
       // CANCEL: back to carousel from message list
       if (c == KEY_CANCEL) {
         _page_active = false;
         _msg_filter = 0;  // reset filter on exit
         _msg_compose_menu = false;
+        _msg_target_menu = false;
         return true;
       }
       // LEFT/RIGHT: cycle message filter
@@ -3584,6 +3621,7 @@ public:
         _msg_scroll_px = 0;
         _msg_vscroll = 0;
         _msg_compose_menu = false;
+        _msg_target_menu = false;
         return true;
       }
       if (c == KEY_RIGHT) {
@@ -3594,6 +3632,7 @@ public:
         _msg_scroll_px = 0;
         _msg_vscroll = 0;
         _msg_compose_menu = false;
+        _msg_target_menu = false;
         return true;
       }
       {
@@ -3609,6 +3648,10 @@ public:
             } else if (_msg_filter > 0) {
               _msg_compose_menu = true;
               _msg_compose_sel = 0;
+            } else {
+              // "All" tab: show Channel/DM target chooser
+              _msg_target_menu = true;
+              _msg_target_sel = 0;
             }
             return true;
           }
@@ -3618,10 +3661,15 @@ public:
             _path_sel = -1;
             return true;
           }
-        } else if (_msg_filter > 0 && c == KEY_DOWN) {
-          // Allow compose from empty filtered view
-          _msg_compose_menu = true;
-          _msg_compose_sel = 0;
+        } else if (c == KEY_DOWN) {
+          // Allow compose from empty message list
+          if (_msg_filter > 0) {
+            _msg_compose_menu = true;
+            _msg_compose_sel = 0;
+          } else {
+            _msg_target_menu = true;
+            _msg_target_sel = 0;
+          }
           return true;
         }
       }
@@ -4209,8 +4257,12 @@ public:
             }
           }
         }
+        // Save target info before reset clears it
+        int ret_ch = _dm_mode ? -1 : ((_channel_idx >= 0) ? _channel_idx : 0);
+        char ret_dm[24] = "";
+        if (_dm_mode) strncpy(ret_dm, _dm_contact.name, 23);
         reset();
-        _task->gotoMessagesScreen();
+        _task->gotoMessagesScreenFiltered(ret_ch, ret_dm[0] ? ret_dm : NULL);
         return true;
       }
       if (ch == '\x02') {
@@ -4646,6 +4698,37 @@ void UITask::gotoMessagesScreen() {
   hs->_msg_vscroll = 0;
   hs->_msg_filter = 0;
   hs->_msg_compose_menu = false;
+  hs->_msg_target_menu = false;
+  setCurrScreen(home);
+}
+
+void UITask::gotoMessagesScreenFiltered(int channel_idx, const char* dm_name) {
+  HomeScreen* hs = (HomeScreen*)home;
+  hs->_page = HomeScreen::MESSAGES;
+  hs->_page_active = true;
+  hs->_msg_sel = 0xFF;
+  hs->_msg_sel_prev = 0xFF;
+  hs->_msg_scroll_px = 0;
+  hs->_msg_vscroll = 0;
+  hs->_msg_compose_menu = false;
+  hs->_msg_target_menu = false;
+  // Rebuild filters and find the matching tab
+  hs->rebuildMsgFilters();
+  hs->_msg_filter = 0;  // default to "All"
+  for (int i = 1; i < hs->_msg_filter_count; i++) {
+    int fval = hs->_msg_filter_channels[i];
+    if (channel_idx >= 0 && fval == channel_idx) {
+      hs->_msg_filter = i;
+      break;
+    }
+    if (dm_name && fval <= -2) {
+      int dm_idx = -fval - 2;
+      if (dm_idx >= 0 && dm_idx < 4 && strcmp(hs->_msg_filter_dm_names[dm_idx], dm_name) == 0) {
+        hs->_msg_filter = i;
+        break;
+      }
+    }
+  }
   setCurrScreen(home);
 }
 
@@ -4693,7 +4776,7 @@ void UITask::sendGPSDM(const ContactInfo& contact) {
     addToMsgLog("You", gps_text, true, 0, -1, contact.name, NULL, the_mesh.getLastSentHash(), expected_ack);
     notify(UIEventType::ack);
     showAlert(result > 0 ? "GPS DM Sent!" : "GPS DM failed", 800);
-    gotoMessagesScreen();
+    gotoMessagesScreenFiltered(-1, contact.name);
     return;
   } else {
     showAlert("No GPS fix", 800);
@@ -4723,7 +4806,7 @@ void UITask::sendPresetToChannel(int channel_idx) {
     showAlert("No channel", 800);
   }
   _preset_pending = false;
-  gotoMessagesScreen();
+  gotoMessagesScreenFiltered(channel_idx, NULL);
 }
 
 void UITask::sendPresetDM(const ContactInfo& contact) {
@@ -4741,7 +4824,7 @@ void UITask::sendPresetDM(const ContactInfo& contact) {
   notify(UIEventType::ack);
   showAlert(result > 0 ? "DM Sent!" : "DM failed", 800);
   _preset_pending = false;
-  gotoMessagesScreen();
+  gotoMessagesScreenFiltered(-1, contact.name);
 }
 
 void UITask::logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4, uint8_t route_type, uint8_t payload_len) {
