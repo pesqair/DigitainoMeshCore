@@ -45,7 +45,11 @@ public:
   virtual void notify(UIEventType t = UIEventType::none) = 0;
   virtual void loop() = 0;
   virtual void matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) { }
-  virtual void onRxPacket(uint8_t first_path_byte, int16_t rssi, int8_t snr_x4) { _last_rx_id = first_path_byte; _last_rx_time = millis(); _last_rx_rssi = rssi; _last_rx_snr_x4 = snr_x4; }
+  virtual void onRxPacket(uint8_t first_path_byte, int16_t rssi, int8_t snr_x4) {
+    // Suppress live RX updates while auto-pings are in progress
+    if (_auto_ping_queue_count > 0 && (_auto_ping_next < _auto_ping_queue_count || _auto_ping_pending)) return;
+    _last_rx_id = first_path_byte; _last_rx_time = millis(); _last_rx_rssi = rssi; _last_rx_snr_x4 = snr_x4;
+  }
   virtual void onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_x4) { }
   virtual void logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4, uint8_t route_type = 0, uint8_t payload_len = 0) { }
   uint8_t _last_rx_id = 0;
@@ -58,6 +62,7 @@ public:
   struct TxSignalEntry {
     uint8_t id;       // 1-byte repeater hash
     int8_t snr_x4;    // SNR * 4
+    bool failed;      // true if ping failed/timed out (show X instead of bars)
   };
   TxSignalEntry _tx_signals[TX_SIGNAL_MAX];
   uint8_t _tx_signal_count = 0;
@@ -82,6 +87,7 @@ public:
   unsigned long _rx_signal_time = 0;
   unsigned long _rx_cycle_time = 0;
   uint8_t _rx_full_cycles = 0;       // completed full rotations
+  bool _signal_synced = false;       // true after all auto-pings done, TX/RX cycle together
 
   virtual void onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature, float gps_lat = 0, float gps_lon = 0) { }
   virtual void onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, uint16_t batt_mv) { }

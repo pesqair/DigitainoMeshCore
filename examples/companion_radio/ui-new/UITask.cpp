@@ -598,51 +598,69 @@ class HomeScreen : public UIScreen {
       int bars_y = 3;
 
       // --- Compute RX signal data ---
-      // Use cycling retransmission data OR latest single packet (whichever is newer)
+      // When synced (all auto-pings done), RX follows TX cycle index
+      // Otherwise: use cycling retransmission data OR latest single packet
       int rx_bars = 0;
       bool has_rx = false;
       uint8_t rx_id = 0;
-      bool use_cycling = _task->_rx_signal_count > 0 &&
-                         (millis() - _task->_rx_signal_time) / 1000 < 300;
-      bool use_live = _task->_last_rx_time > 0 &&
-                      (millis() - _task->_last_rx_time) / 1000 < 300;
-      if (use_cycling && use_live && _task->_last_rx_time > _task->_rx_signal_time) {
-        // Don't let live packet override until cycling has completed 2 full rotations
-        if (_task->_rx_full_cycles >= 2) {
-          use_cycling = false;  // cycling done, allow live packet
-        }
-      }
-      if (use_cycling) {
+      if (_task->_signal_synced && _task->_rx_signal_count > 0 &&
+          (millis() - _task->_rx_signal_time) / 1000 < 300) {
+        // Synced mode: RX tracks TX cycle index
         has_rx = true;
         _needs_fast_refresh = true;
-        if (_task->_rx_signal_count > 1 && millis() - _task->_rx_cycle_time > 2000) {
-          uint8_t prev = _task->_rx_signal_cycle;
-          _task->_rx_signal_cycle = (prev + 1) % _task->_rx_signal_count;
-          if (_task->_rx_signal_cycle < prev) {
-            _task->_rx_full_cycles++;  // wrapped around
+        _task->_rx_signal_cycle = _task->_tx_signal_cycle;
+        if (_task->_rx_signal_cycle < _task->_rx_signal_count) {
+          auto& rxe = _task->_rx_signals[_task->_rx_signal_cycle];
+          rx_id = rxe.id;
+          float snr = (float)rxe.snr_x4 / 4.0f;
+          if (snr > 10) rx_bars = 4;
+          else if (snr > 5) rx_bars = 3;
+          else if (snr > 0) rx_bars = 2;
+          else if (snr > -10) rx_bars = 1;
+        }
+      } else {
+        bool use_cycling = _task->_rx_signal_count > 0 &&
+                           (millis() - _task->_rx_signal_time) / 1000 < 300;
+        bool use_live = _task->_last_rx_time > 0 &&
+                        (millis() - _task->_last_rx_time) / 1000 < 300;
+        if (use_cycling && use_live && _task->_last_rx_time > _task->_rx_signal_time) {
+          if (_task->_rx_full_cycles >= 2) {
+            use_cycling = false;  // cycling done, allow live packet
           }
-          _task->_rx_cycle_time = millis();
         }
-        auto& rxe = _task->_rx_signals[_task->_rx_signal_cycle];
-        rx_id = rxe.id;
-        float snr = (float)rxe.snr_x4 / 4.0f;
-        if (snr > 10) rx_bars = 4;
-        else if (snr > 5) rx_bars = 3;
-        else if (snr > 0) rx_bars = 2;
-        else if (snr > -10) rx_bars = 1;
-      } else if (use_live) {
-        has_rx = true;
-        _needs_fast_refresh = true;
-        rx_id = _task->_last_rx_id;
-        float snr = (float)_task->_last_rx_snr_x4 / 4.0f;
-        if (snr > 10) rx_bars = 4;
-        else if (snr > 5) rx_bars = 3;
-        else if (snr > 0) rx_bars = 2;
-        else if (snr > -10) rx_bars = 1;
+        if (use_cycling) {
+          has_rx = true;
+          _needs_fast_refresh = true;
+          if (_task->_rx_signal_count > 1 && millis() - _task->_rx_cycle_time > 2000) {
+            uint8_t prev = _task->_rx_signal_cycle;
+            _task->_rx_signal_cycle = (prev + 1) % _task->_rx_signal_count;
+            if (_task->_rx_signal_cycle < prev) {
+              _task->_rx_full_cycles++;  // wrapped around
+            }
+            _task->_rx_cycle_time = millis();
+          }
+          auto& rxe = _task->_rx_signals[_task->_rx_signal_cycle];
+          rx_id = rxe.id;
+          float snr = (float)rxe.snr_x4 / 4.0f;
+          if (snr > 10) rx_bars = 4;
+          else if (snr > 5) rx_bars = 3;
+          else if (snr > 0) rx_bars = 2;
+          else if (snr > -10) rx_bars = 1;
+        } else if (use_live) {
+          has_rx = true;
+          _needs_fast_refresh = true;
+          rx_id = _task->_last_rx_id;
+          float snr = (float)_task->_last_rx_snr_x4 / 4.0f;
+          if (snr > 10) rx_bars = 4;
+          else if (snr > 5) rx_bars = 3;
+          else if (snr > 0) rx_bars = 2;
+          else if (snr > -10) rx_bars = 1;
+        }
       }
 
       // --- Compute TX signal data ---
       bool has_tx = false;
+      bool tx_failed = false;
       int tx_bars = 0;
       uint8_t tx_id = 0;
       if (_task->_tx_signal_count > 0) {
@@ -656,11 +674,14 @@ class HomeScreen : public UIScreen {
           }
           auto& txe = _task->_tx_signals[_task->_tx_signal_cycle];
           tx_id = txe.id;
-          float tx_snr = (float)txe.snr_x4 / 4.0f;
-          if (tx_snr > 10) tx_bars = 4;
-          else if (tx_snr > 5) tx_bars = 3;
-          else if (tx_snr > 0) tx_bars = 2;
-          else if (tx_snr > -10) tx_bars = 1;
+          tx_failed = txe.failed;
+          if (!tx_failed) {
+            float tx_snr = (float)txe.snr_x4 / 4.0f;
+            if (tx_snr > 10) tx_bars = 4;
+            else if (tx_snr > 5) tx_bars = 3;
+            else if (tx_snr > 0) tx_bars = 2;
+            else if (tx_snr > -10) tx_bars = 1;
+          }
         }
       }
 
@@ -721,17 +742,24 @@ class HomeScreen : public UIScreen {
         display.fillRect(bars_x + 2, bars_y, 1, 1);        // ..█..
         display.fillRect(bars_x + 1, bars_y + 1, 3, 1);    // .███.
         display.fillRect(bars_x, bars_y + 2, 5, 1);         // █████
-        // Draw bars on top
-        for (int b = 0; b < 4; b++) {
-          int bh = 3 + b * 2;
-          int bx = bars_x + b * 3;
-          int by = bars_y + (10 - bh);
-          if (b < tx_bars) {
-            display.setColor(DisplayDriver::GREEN);
-            display.fillRect(bx, by, 2, bh);
-          } else {
-            display.setColor(DisplayDriver::GREEN);
-            display.fillRect(bx, bars_y + 9, 2, 1);
+        if (tx_failed) {
+          // Draw "?" in bar area to indicate ping failed/no response
+          display.setColor(DisplayDriver::LIGHT);
+          display.setCursor(bars_x + 3, bars_y + 3);
+          display.print("?");
+        } else {
+          // Draw normal bars
+          for (int b = 0; b < 4; b++) {
+            int bh = 3 + b * 2;
+            int bx = bars_x + b * 3;
+            int by = bars_y + (10 - bh);
+            if (b < tx_bars) {
+              display.setColor(DisplayDriver::GREEN);
+              display.fillRect(bx, by, 2, bh);
+            } else {
+              display.setColor(DisplayDriver::GREEN);
+              display.fillRect(bx, bars_y + 9, 2, 1);
+            }
           }
         }
       }
@@ -5508,6 +5536,7 @@ void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uin
     _auto_ping_queue_count = 0;
     _auto_ping_next = 0;
     _auto_ping_pending = false;
+    _signal_synced = false;
   }
   entry.expected_ack = expected_ack;
   entry.delivered = false;
@@ -5711,6 +5740,7 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
     if (_tx_signal_count < TX_SIGNAL_MAX) {
       _tx_signals[_tx_signal_count].id = _auto_ping_current_id;
       _tx_signals[_tx_signal_count].snr_x4 = (int8_t)(snr_there * 4);
+      _tx_signals[_tx_signal_count].failed = false;
       _tx_signal_count++;
       _tx_signal_time = millis();
       _tx_cycle_time = millis();
@@ -5736,6 +5766,7 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
   uint8_t repeater_id = hs->_ct_path_key[0];
   _tx_signals[0].id = repeater_id;
   _tx_signals[0].snr_x4 = (int8_t)(snr_there * 4);
+  _tx_signals[0].failed = false;
   _tx_signal_count = 1;
   _tx_signal_time = millis();
   _tx_signal_cycle = 0;
@@ -5927,21 +5958,75 @@ void UITask::loop() {
           _auto_ping_current_id = hash;
           _auto_ping_timeout = millis() + est_timeout + 2000;
         } else {
+          // Send failed — record as failed entry
+          if (_tx_signal_count < TX_SIGNAL_MAX) {
+            _tx_signals[_tx_signal_count].id = hash;
+            _tx_signals[_tx_signal_count].snr_x4 = 0;
+            _tx_signals[_tx_signal_count].failed = true;
+            _tx_signal_count++;
+            _tx_signal_time = millis();
+          }
           _auto_ping_next++;
           _auto_ping_next_time = millis() + 1000;
         }
       } else {
-        _auto_ping_next++;  // repeater not in contacts, skip
+        // Repeater not in contacts — record as failed entry
+        if (_tx_signal_count < TX_SIGNAL_MAX) {
+          _tx_signals[_tx_signal_count].id = hash;
+          _tx_signals[_tx_signal_count].snr_x4 = 0;
+          _tx_signals[_tx_signal_count].failed = true;
+          _tx_signal_count++;
+          _tx_signal_time = millis();
+        }
+        _auto_ping_next++;
         _auto_ping_next_time = millis() + 500;
       }
     }
   }
 
-  // Auto-ping timeout
+  // Auto-ping timeout — record as failed entry
   if (_auto_ping_pending && millis() > _auto_ping_timeout) {
     _auto_ping_pending = false;
+    if (_tx_signal_count < TX_SIGNAL_MAX) {
+      _tx_signals[_tx_signal_count].id = _auto_ping_current_id;
+      _tx_signals[_tx_signal_count].snr_x4 = 0;
+      _tx_signals[_tx_signal_count].failed = true;
+      _tx_signal_count++;
+      _tx_signal_time = millis();
+    }
     _auto_ping_next++;
     _auto_ping_next_time = millis() + 1000;
+  }
+
+  // All auto-pings complete — sync RX and TX cycling order
+  if (_auto_ping_queue_count > 0 && !_auto_ping_pending &&
+      _auto_ping_next >= _auto_ping_queue_count && !_signal_synced) {
+    _signal_synced = true;
+    // Rebuild _rx_signals to match _tx_signals order (by repeater ID)
+    TxSignalEntry synced_rx[TX_SIGNAL_MAX];
+    uint8_t synced_count = 0;
+    for (uint8_t t = 0; t < _tx_signal_count && synced_count < TX_SIGNAL_MAX; t++) {
+      bool found = false;
+      for (uint8_t r = 0; r < _rx_signal_count; r++) {
+        if (_rx_signals[r].id == _tx_signals[t].id) {
+          synced_rx[synced_count] = _rx_signals[r];
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        // TX entry has no matching RX data (shouldn't happen often)
+        synced_rx[synced_count].id = _tx_signals[t].id;
+        synced_rx[synced_count].snr_x4 = 0;
+        synced_rx[synced_count].failed = false;
+      }
+      synced_count++;
+    }
+    memcpy(_rx_signals, synced_rx, sizeof(TxSignalEntry) * synced_count);
+    _rx_signal_count = synced_count;
+    _rx_signal_cycle = _tx_signal_cycle;
+    _rx_cycle_time = _tx_cycle_time;
+    _rx_signal_time = _tx_signal_time;
   }
 
 #ifdef PIN_BUZZER

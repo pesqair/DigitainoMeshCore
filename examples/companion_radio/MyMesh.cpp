@@ -293,8 +293,8 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
     int8_t rx_snr_x4 = (int8_t)(snr * 4.0f);
     if (plen > 0) {
       _ui->onRxPacket(path[plen - 1], rx_rssi, rx_snr_x4);
-    } else if (i + plen < len) {
-      _ui->onRxPacket(raw[i + plen], rx_rssi, rx_snr_x4);  // first payload byte as fallback
+    } else {
+      _ui->onRxPacket(0, rx_rssi, rx_snr_x4);  // direct packet, no relay ID
     }
     i += plen;
     int payload_len = len - i;
