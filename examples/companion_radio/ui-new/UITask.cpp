@@ -1257,6 +1257,7 @@ public:
           display.drawTextCentered(display.width() / 2, 57, "...");
         } else if (_msg_filter > 0) {
           // === Multi-line rendering for filtered views ===
+          bool is_channel_filter = (_msg_filter_channels[_msg_filter] >= 0);
           // Reset vscroll when selection changes
           if (_msg_sel != _msg_sel_prev) {
             _msg_sel_prev = _msg_sel;
@@ -1285,7 +1286,10 @@ public:
               snprintf(prefix, sizeof(prefix), "<%02X> ", entry.path[entry.path_len - 1]);
             }
             char line[104];
-            snprintf(line, sizeof(line), "%s%s: %s", prefix, entry.origin, entry.text);
+            if (is_channel_filter)
+              snprintf(line, sizeof(line), "%s%s", prefix, entry.text);
+            else
+              snprintf(line, sizeof(line), "%s%s: %s", prefix, entry.origin, entry.text);
             int line_len = strlen(line);
             // First line has full width, continuation lines have reduced width
             int first_chars = (avail_w - 0) / char_w;  // no indent on first line
@@ -1316,7 +1320,10 @@ public:
                 snprintf(prefix, sizeof(prefix), "<%02X> ", entry.path[entry.path_len - 1]);
               }
               char line[104];
-              snprintf(line, sizeof(line), "%s%s: %s", prefix, entry.origin, entry.text);
+              if (is_channel_filter)
+                snprintf(line, sizeof(line), "%s%s", prefix, entry.text);
+              else
+                snprintf(line, sizeof(line), "%s%s: %s", prefix, entry.origin, entry.text);
               int line_len = strlen(line);
               int first_chars = avail_w / char_w;
               int cont_chars = (avail_w - indent_px) / char_w;
@@ -1352,7 +1359,10 @@ public:
               snprintf(prefix, sizeof(prefix), "<%02X> ", entry.path[entry.path_len - 1]);
             }
             char line[104];
-            snprintf(line, sizeof(line), "%s%s: %s", prefix, entry.origin, entry.text);
+            if (is_channel_filter)
+              snprintf(line, sizeof(line), "%s%s", prefix, entry.text);
+            else
+              snprintf(line, sizeof(line), "%s%s: %s", prefix, entry.origin, entry.text);
             int line_len = strlen(line);
             int first_chars = avail_w / char_w;
             int cont_chars = (avail_w - indent_px) / char_w;
