@@ -121,12 +121,26 @@ static const uint8_t muted_icon[] = {
   0x20, 0x6a, 0xea, 0xe4, 0xe4, 0xea, 0x6a, 0x20
 };
 
-// 7x5 envelope icon for unread messages
+// 9x7 envelope icon for unread messages (2 bytes per row)
 static const uint8_t envelope_icon[] = {
-  0x7F, 0x63, 0x55, 0x49, 0x7F
+  0xFF, 0x80,  // #########
+  0x80, 0x80,  // #.......#
+  0xC1, 0x80,  // ##.....##
+  0xA2, 0x80,  // #.#...#.#
+  0x94, 0x80,  // #..#.#..#
+  0x88, 0x80,  // #...#...#
+  0xFF, 0x80,  // #########
 };
 
-// 5x7 satellite antenna icon for GPS indicator
+// 7x9 satellite dish icon for GPS indicator
 static const uint8_t sat_icon[] = {
-  0x11, 0x0A, 0x04, 0x04, 0x04, 0x04, 0x0E
+  0xC0,  // ##.....  signal
+  0x20,  // ..#....  signal
+  0x10,  // ...#...  signal
+  0x3C,  // ..####.  dish top
+  0x7C,  // .#####.  dish wide
+  0x3C,  // ..####.  dish bottom
+  0x10,  // ...#...  pole
+  0x10,  // ...#...  pole
+  0x38,  // ..###..  base
 };

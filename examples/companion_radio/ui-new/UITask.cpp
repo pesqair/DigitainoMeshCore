@@ -612,11 +612,14 @@ class HomeScreen : public UIScreen {
         int bh = 3 + b * 2;  // heights: 3, 5, 7, 9
         int bx = bars_x + b * 3;
         int by = bars_y + (10 - bh);
-        display.setColor(b < bars ? DisplayDriver::GREEN : DisplayDriver::LIGHT);
         if (b < bars) {
+          display.setColor(DisplayDriver::GREEN);
           display.fillRect(bx, by, 2, bh);
         } else {
-          display.drawRect(bx, by, 2, bh);
+          // On monochrome, drawRect w=2 looks same as fillRect
+          // Draw just a 1px baseline tick for unfilled bars
+          display.setColor(DisplayDriver::GREEN);
+          display.fillRect(bx, bars_y + 9, 2, 1);
         }
       }
       right_x -= 1;
@@ -663,8 +666,8 @@ class HomeScreen : public UIScreen {
       bool gps_on = _task->getGPSState();
       if (gps_on) {
         display.setColor(DisplayDriver::LIGHT);
-        display.drawXbm(left_x, 4, sat_icon, 5, 7);
-        left_x += 6;
+        display.drawXbm(left_x, 2, sat_icon, 7, 9);
+        left_x += 8;
         LocationProvider* nmea = sensors.getLocationProvider();
         char gps_num[4];
         if (nmea == NULL || !nmea->isValid()) {
@@ -683,10 +686,10 @@ class HomeScreen : public UIScreen {
     int msg_count = _task->getMsgCount();
     if (msg_count > 0) {
       if (left_x > 0) left_x += 2;
-      if (left_x + 7 <= left_max) {
+      if (left_x + 9 <= left_max) {
         display.setColor(DisplayDriver::YELLOW);
-        display.drawXbm(left_x, 5, envelope_icon, 7, 5);
-        left_x += 8;
+        display.drawXbm(left_x, 3, envelope_icon, 9, 7);
+        left_x += 10;
         char cnt[6];
         snprintf(cnt, sizeof(cnt), "%d", msg_count);
         if (left_x + (int)strlen(cnt) * 6 <= left_max) {
