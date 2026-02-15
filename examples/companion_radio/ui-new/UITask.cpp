@@ -607,7 +607,11 @@ class HomeScreen : public UIScreen {
       bool use_live = _task->_last_rx_time > 0 &&
                       (millis() - _task->_last_rx_time) / 1000 < 300;
       if (use_cycling && use_live && _task->_last_rx_time > _task->_rx_signal_time) {
-        use_cycling = false;  // live packet is newer
+        // Don't let live packet override until cycling has shown each repeater at least twice
+        unsigned long min_duration = (unsigned long)_task->_rx_signal_count * 2 * 2000;
+        if (millis() - _task->_rx_signal_time >= min_duration) {
+          use_cycling = false;  // cycling done, allow live packet
+        }
       }
       if (use_cycling) {
         has_rx = true;
