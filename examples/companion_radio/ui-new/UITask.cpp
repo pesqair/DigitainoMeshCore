@@ -875,7 +875,7 @@ public:
             heard_count_for_nav = entry.repeat_path_len;
             char* p = detail_items[detail_count];
             int pos = snprintf(p, sizeof(detail_items[0]), "Heard by:");
-            for (int i = 0; i < entry.repeat_path_len && pos < 46; i++) {
+            for (int i = 0; i < entry.repeat_path_len && pos < (int)sizeof(detail_items[0]) - 4; i++) {
               if (i > 0) {
                 pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, ",");
               }
@@ -989,37 +989,89 @@ public:
               prefix[prefix_len] = '\0';
               display.print(prefix);
             }
-            // Render each repeater hash: selected = inverted (filled box + dark text)
+            // Render each repeater hash with horizontal scroll to keep selected visible
             const char* p = text + prefix_len;
-            int rpt_idx = 0;
-            int cur_x = prefix_len > 0 ? display.getTextWidth(prefix) : 0;
+            int prefix_w = prefix_len > 0 ? display.getTextWidth(prefix) : 0;
             int max_x = display.width();
-            while (*p && cur_x < max_x) {
+            int avail_w = max_x - prefix_w;
+
+            // Pre-compute x positions of each repeater to determine scroll offset
+            int rpt_positions[MAX_PATH_SIZE];
+            int rpt_widths[MAX_PATH_SIZE];
+            int sep_widths[MAX_PATH_SIZE]; // separator before each repeater (comma)
+            int n_rpts = 0;
+            int total_w = 0;
+            {
+              const char* q = p;
+              while (*q && n_rpts < MAX_PATH_SIZE) {
+                sep_widths[n_rpts] = 0;
+                if ((*q >= '0' && *q <= '9') || (*q >= 'A' && *q <= 'F') || (*q >= 'a' && *q <= 'f')) {
+                  char hex[3] = { q[0], q[1] ? q[1] : '\0', '\0' };
+                  rpt_positions[n_rpts] = total_w;
+                  rpt_widths[n_rpts] = display.getTextWidth(hex);
+                  total_w += rpt_widths[n_rpts];
+                  q += (q[1] && q[1] != '>' && q[1] != ',') ? 2 : 1;
+                  n_rpts++;
+                } else {
+                  char sep[2] = { *q, '\0' };
+                  int sw = display.getTextWidth(sep);
+                  total_w += sw;
+                  // Attribute separator width to next repeater
+                  if (n_rpts < MAX_PATH_SIZE) sep_widths[n_rpts] = sw;
+                  // Shift positions of subsequent repeaters
+                  q++;
+                }
+              }
+            }
+
+            // Compute scroll offset to keep selected repeater visible
+            int scroll_x = 0;
+            if (_path_sel >= 0 && _path_sel < n_rpts && total_w > avail_w) {
+              int sel_left = rpt_positions[_path_sel];
+              int sel_right = sel_left + rpt_widths[_path_sel];
+              if (sel_right - scroll_x > avail_w) {
+                scroll_x = sel_right - avail_w;
+              }
+              if (sel_left < scroll_x) {
+                scroll_x = sel_left;
+              }
+            }
+
+            // Render with scroll offset
+            int rpt_idx = 0;
+            int cur_x = prefix_w;
+            int content_x = 0; // position in content space (before scroll)
+            while (*p) {
               if ((*p >= '0' && *p <= '9') || (*p >= 'A' && *p <= 'F') || (*p >= 'a' && *p <= 'f')) {
                 char hex[3] = { p[0], p[1] ? p[1] : '\0', '\0' };
                 int hw = display.getTextWidth(hex);
-                if (cur_x + hw > max_x) break;  // don't render partial chars past edge
-                if (rpt_idx == _path_sel) {
-                  // Inverted: filled rect + dark text (negative space)
-                  display.setColor(DisplayDriver::YELLOW);
-                  display.fillRect(cur_x, y, hw + 1, 10);
-                  display.setColor(DisplayDriver::DARK);
-                  display.setCursor(cur_x, y);
-                  display.print(hex);
-                } else {
-                  display.setColor(DisplayDriver::LIGHT);
-                  display.setCursor(cur_x, y);
-                  display.print(hex);
+                int draw_x = prefix_w + content_x - scroll_x;
+                if (draw_x + hw > 0 && draw_x < max_x) {
+                  if (rpt_idx == _path_sel) {
+                    display.setColor(DisplayDriver::YELLOW);
+                    display.fillRect(draw_x, y, hw + 1, 10);
+                    display.setColor(DisplayDriver::DARK);
+                    display.setCursor(draw_x, y);
+                    display.print(hex);
+                  } else {
+                    display.setColor(DisplayDriver::LIGHT);
+                    display.setCursor(draw_x, y);
+                    display.print(hex);
+                  }
                 }
-                cur_x += hw;
+                content_x += hw;
                 p += (p[1] && p[1] != '>' && p[1] != ',') ? 2 : 1;
                 rpt_idx++;
               } else {
-                display.setColor(DisplayDriver::LIGHT);
                 char sep[2] = { *p, '\0' };
-                display.setCursor(cur_x, y);
-                display.print(sep);
-                cur_x += display.getTextWidth(sep);
+                int sw = display.getTextWidth(sep);
+                int draw_x = prefix_w + content_x - scroll_x;
+                if (draw_x + sw > 0 && draw_x < max_x) {
+                  display.setColor(DisplayDriver::LIGHT);
+                  display.setCursor(draw_x, y);
+                  display.print(sep);
+                }
+                content_x += sw;
                 p++;
               }
             }
