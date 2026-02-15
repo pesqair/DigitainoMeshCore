@@ -1046,7 +1046,7 @@ public:
                 char hex[3] = { p[0], p[1] ? p[1] : '\0', '\0' };
                 int hw = display.getTextWidth(hex);
                 int draw_x = prefix_w + content_x - scroll_x;
-                if (draw_x + hw > 0 && draw_x < max_x) {
+                if (draw_x >= prefix_w && draw_x + hw <= max_x) {
                   if (rpt_idx == _path_sel) {
                     display.setColor(DisplayDriver::YELLOW);
                     display.fillRect(draw_x, y, hw + 1, 10);
@@ -1066,7 +1066,7 @@ public:
                 char sep[2] = { *p, '\0' };
                 int sw = display.getTextWidth(sep);
                 int draw_x = prefix_w + content_x - scroll_x;
-                if (draw_x + sw > 0 && draw_x < max_x) {
+                if (draw_x >= prefix_w && draw_x + sw <= max_x) {
                   display.setColor(DisplayDriver::LIGHT);
                   display.setCursor(draw_x, y);
                   display.print(sep);
