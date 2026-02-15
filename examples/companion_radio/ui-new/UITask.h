@@ -76,6 +76,7 @@ public:
     _msg_log_count = 0;
     _msg_log_next = 0;
     _preset_pending = false;
+    _preset_add_mode = false;
     _pending_preset[0] = '\0';
   }
   void begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* node_prefs);
@@ -97,6 +98,8 @@ public:
     int16_t repeat_rssi;      // RSSI of most recent repeat heard
     int8_t  repeat_snr_x4;    // SNR*4 of most recent repeat heard
     uint8_t repeat_path[MAX_PATH_SIZE]; // unique repeater hashes heard
+    int16_t repeat_path_rssi[MAX_PATH_SIZE]; // per-repeater RSSI
+    int8_t  repeat_path_snr_x4[MAX_PATH_SIZE]; // per-repeater SNR*4
     uint8_t repeat_path_len;  // count of unique repeaters heard
     uint8_t tx_count;         // number of times this message was transmitted
     uint32_t expected_ack;    // ACK hash for delivery tracking (DMs only)
@@ -124,6 +127,7 @@ public:
   // Pending preset for Channel/DM target selection
   char _pending_preset[80];
   bool _preset_pending;
+  bool _preset_add_mode;  // true = compose will save as preset instead of sending
 
   void gotoHomeScreen() { setCurrScreen(home); }
   void gotoComposeScreen();
