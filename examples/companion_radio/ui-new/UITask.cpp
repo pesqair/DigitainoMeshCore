@@ -1424,7 +1424,7 @@ public:
         if (getContactByKey(_ct_action_key, ci)) {
           display.setColor(DisplayDriver::YELLOW);
           char ct_hdr[48];
-          snprintf(ct_hdr, sizeof(ct_hdr), "<%02X> %s", ci.id.pub_key[PUB_KEY_SIZE - 1], ci.name);
+          snprintf(ct_hdr, sizeof(ct_hdr), "<%02X> %s", ci.id.pub_key[0], ci.name);
           display.drawTextEllipsized(0, TOP_BAR_H, display.width(), ct_hdr);
 
           // Build combined list: actions first, then cached info lines
@@ -1548,7 +1548,7 @@ public:
               }
               display.setColor(v == _ct_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
               // Hash prefix
-              uint8_t hash = ci.id.pub_key[PUB_KEY_SIZE - 1];
+              uint8_t hash = ci.id.pub_key[0];
               char prefix[8];
               snprintf(prefix, sizeof(prefix), "<%02X>", hash);
               display.setCursor(8, y);
@@ -2291,7 +2291,7 @@ public:
             int n = the_mesh.getNumContacts();
             bool found = false;
             for (int i = 0; i < n; i++) {
-              if (the_mesh.getContactByIdx(i, ci) && ci.id.pub_key[PUB_KEY_SIZE - 1] == rpt_hash) {
+              if (the_mesh.getContactByIdx(i, ci) && ci.id.pub_key[0] == rpt_hash) {
                 uint32_t est_timeout;
                 int result = the_mesh.sendPathFind(ci, est_timeout);
                 if (result != MSG_SEND_FAILED) {
