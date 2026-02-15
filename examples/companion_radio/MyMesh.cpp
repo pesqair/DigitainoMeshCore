@@ -306,6 +306,7 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
     sha.finalize(rx_hash, MAX_HASH_SIZE);
 
     _ui->matchRxPacket(rx_hash, plen, path, (int16_t)rssi, (int8_t)(snr * 4.0f));
+    _ui->logPacket(payload_type, plen, path, (int16_t)rssi, (int8_t)(snr * 4.0f));
   }
 }
 

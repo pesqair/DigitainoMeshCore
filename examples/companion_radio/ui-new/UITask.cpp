@@ -168,6 +168,7 @@ class HomeScreen : public UIScreen {
     RECENT,
     TRACE,
     RADIO,
+    PACKETS,
     BLUETOOTH,
     ADVERT,
 #if ENV_INCLUDE_GPS == 1
@@ -200,6 +201,9 @@ class HomeScreen : public UIScreen {
   bool _show_voltage;
   bool _show_speed;
   bool _show_snr;
+  uint8_t _pkt_sel;  // selected packet in packet log page
+  int8_t _path_sel;   // -1 = no repeater selected, 0..N = index into path
+  bool _needs_fast_refresh; // true when any visible age < 60s
   float _max_speed;
   float _odometer;          // miles traveled
   unsigned long _odo_last;  // last odometer update time
@@ -266,6 +270,7 @@ class HomeScreen : public UIScreen {
   uint8_t _ct_action_sel;    // selected action in menu
   uint8_t _ct_action_count;  // number of available actions
   uint8_t _ct_detail_scroll; // scroll offset in detail/action view
+  uint8_t _ct_action_key[PUB_KEY_SIZE]; // pub_key of contact in action menu (stable across re-sorts)
   // Path discovery sub-state
   bool _ct_path_pending;
   unsigned long _ct_path_timeout;
@@ -326,6 +331,7 @@ class HomeScreen : public UIScreen {
   }
 
   void reselectContact(const char* name) {
+    rebuildContactsSorted();
     ContactInfo ci;
     for (int i = 0; i < _ct_count; i++) {
       if (the_mesh.getContactByIdx(_ct_sorted[i], ci) && strcmp(ci.name, name) == 0) {
@@ -333,6 +339,17 @@ class HomeScreen : public UIScreen {
         return;
       }
     }
+  }
+
+  // Find contact by pub_key (stable across re-sorts)
+  bool getContactByKey(const uint8_t* pub_key, ContactInfo& out_ci) {
+    int n = the_mesh.getNumContacts();
+    for (int i = 0; i < n; i++) {
+      if (the_mesh.getContactByIdx(i, out_ci) && memcmp(out_ci.id.pub_key, pub_key, PUB_KEY_SIZE) == 0) {
+        return true;
+      }
+    }
+    return false;
   }
 
   void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts) {
@@ -406,7 +423,7 @@ public:
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
        _preset_sel(0), _msg_sel(0), _msg_sel_prev(0xFF), _msg_scroll_px(0),
        _msg_detail(false), _msg_detail_scroll(0), _msg_reply_menu(false), _msg_reply_sel(0), _shutdown_init(false), _show_voltage(false), _show_speed(false),
-       _show_snr(false), _max_speed(0), _odometer(0), _odo_last(0), _nav_screen_lock(false),
+       _show_snr(false), _pkt_sel(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _nav_screen_lock(false),
        _preset_target_choosing(false), _preset_target_sel(0),
        _ct_sel(0), _ct_count(0), _ct_action(false), _ct_action_sel(0), _ct_action_count(0), _ct_detail_scroll(0),
        _ct_path_pending(false), _ct_path_found(false),
@@ -428,33 +445,32 @@ public:
 
   int render(DisplayDriver& display) override {
     char tmp[80];
-    // node name
+    _needs_fast_refresh = false;
     display.setTextSize(1);
     display.setColor(DisplayDriver::GREEN);
     char filtered_name[sizeof(_node_prefs->node_name)];
     display.translateUTF8ToBlocks(filtered_name, _node_prefs->node_name, sizeof(filtered_name));
-    display.setCursor(0, 0);
-    display.print(filtered_name);
-
-    // battery voltage (hidden when SNR display is active)
-    if (!_show_snr) {
-      renderBatteryIndicator(display, _task->getBattMilliVolts());
-    }
 
     // SNR/RSSI display OR speed HUD in the top bar (SNR takes priority over speed)
     if (_show_snr) {
-      char snr_buf[20];
-      snprintf(snr_buf, sizeof(snr_buf), "%02X %.0f/%.1f", _task->_last_rx_id, radio_driver.getLastRSSI(), radio_driver.getLastSNR());
-      display.setColor(DisplayDriver::GREEN);
-      display.setTextSize(1);
-      int snrX = display.width() - (int)strlen(snr_buf) * 6 - 2;
-      int nameEnd = (int)strlen(filtered_name) * 6 + 2;
-      if (snrX < nameEnd) snrX = nameEnd;
-      display.setCursor(snrX, 1);
+      // SNR mode: hide node name, show full-width SNR info
+      char snr_buf[28];
+      int pos = snprintf(snr_buf, sizeof(snr_buf), "%02X %.0f/%.1f", _task->_last_rx_id, radio_driver.getLastRSSI(), radio_driver.getLastSNR());
+      if (_task->_last_rx_time > 0) {
+        unsigned long age_s = (millis() - _task->_last_rx_time) / 1000;
+        if (age_s < 60) { snprintf(snr_buf + pos, sizeof(snr_buf) - pos, " %lus", age_s); _needs_fast_refresh = true; }
+        else if (age_s < 3600) snprintf(snr_buf + pos, sizeof(snr_buf) - pos, " %lum", age_s / 60);
+        else snprintf(snr_buf + pos, sizeof(snr_buf) - pos, " %luh", age_s / 3600);
+      }
+      display.setCursor(0, 0);
       display.print(snr_buf);
-    }
+    } else {
+      // Normal mode: show node name + battery
+      display.setCursor(0, 0);
+      display.print(filtered_name);
+      renderBatteryIndicator(display, _task->getBattMilliVolts());
 #if ENV_INCLUDE_GPS == 1
-    else if (_show_speed && _page != HomePage::NAV) {
+      if (_show_speed && _page != HomePage::NAV) {
       // speed + direction HUD (between name and battery) - hidden on NAV page
       LocationProvider* nmea = sensors.getLocationProvider();
       float speed_mph = 0;
@@ -485,8 +501,9 @@ public:
       if (spdX < nameEnd) spdX = nameEnd;
       display.setCursor(spdX, 1);
       display.print(spd);
-    }
+      }
 #endif
+    }
 
     // curr page indicator
     int y = 14;
@@ -685,13 +702,21 @@ public:
         }
         detail_count++;
 
-        // Sent messages: Repeats, repeat Signal, repeat Path
+        // Signal + Path lines (tracked for repeater nav)
+        int signal_detail_idx = -1;
+        int path_detail_idx = -1;
+        int path_count_for_nav = 0;
+        int heard_detail_idx = -1;
+        int heard_count_for_nav = 0;
+
+        // Sent messages: Repeats, repeat Signal, repeat Path (Heard by)
         if (entry.is_sent && entry.heard_repeats > 0) {
           snprintf(detail_items[detail_count], sizeof(detail_items[0]),
                    "Repeats: %d", entry.heard_repeats);
           detail_count++;
 
           if (entry.repeat_rssi != 0) {
+            signal_detail_idx = detail_count;
             float rsnr = (float)entry.repeat_snr_x4 / 4.0f;
             snprintf(detail_items[detail_count], sizeof(detail_items[0]),
                      "Signal: %d/%.1f", entry.repeat_rssi, rsnr);
@@ -699,6 +724,8 @@ public:
           }
 
           if (entry.repeat_path_len > 0) {
+            heard_detail_idx = detail_count;
+            heard_count_for_nav = entry.repeat_path_len;
             char* p = detail_items[detail_count];
             int pos = snprintf(p, sizeof(detail_items[0]), "Heard by:");
             for (int i = 0; i < entry.repeat_path_len && pos < 46; i++) {
@@ -723,6 +750,7 @@ public:
 
         // Received messages: Signal (RSSI/SNR)
         if (!entry.is_sent && entry.rssi != 0) {
+          signal_detail_idx = detail_count;
           float snr = (float)entry.snr_x4 / 4.0f;
           snprintf(detail_items[detail_count], sizeof(detail_items[0]),
                    "Signal: %d/%.1f", entry.rssi, snr);
@@ -731,6 +759,8 @@ public:
 
         // Received messages: Path (only if there are repeater hops)
         if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF) {
+          path_detail_idx = detail_count;
+          path_count_for_nav = entry.path_len;
           char* p = detail_items[detail_count];
           int pos = snprintf(p, 6, "Path:");
           for (int i = 0; i < entry.path_len && pos < 46; i++) {
@@ -774,21 +804,86 @@ public:
         display.setColor(DisplayDriver::YELLOW);
         display.drawTextCentered(display.width() / 2, 18, "-- Msg Detail --");
 
+        // Auto-activate/deactivate repeater selection based on visibility
+        int nav_path_len = path_count_for_nav > 0 ? path_count_for_nav : heard_count_for_nav;
+        int nav_line_idx = path_detail_idx >= 0 ? path_detail_idx : heard_detail_idx;
+        if (nav_line_idx >= 0 && nav_path_len > 0) {
+          bool nav_visible = (nav_line_idx >= _msg_detail_scroll && nav_line_idx < _msg_detail_scroll + 3);
+          if (nav_visible && _path_sel < 0) _path_sel = 0;  // auto-activate
+          else if (!nav_visible && _path_sel >= 0) _path_sel = -1;  // deactivate
+        }
+        if (_path_sel >= nav_path_len && nav_path_len > 0) _path_sel = nav_path_len - 1;
+
+        // Update Signal line to show selected repeater context
+        if (_path_sel >= 0 && signal_detail_idx >= 0) {
+          uint8_t sel_hash = 0;
+          if (path_detail_idx >= 0 && _path_sel < (int)entry.path_len) {
+            sel_hash = entry.path[_path_sel];
+          } else if (heard_detail_idx >= 0 && _path_sel < (int)entry.repeat_path_len) {
+            sel_hash = entry.repeat_path[_path_sel];
+          }
+          if (sel_hash != 0) {
+            // Rewrite signal line with selected repeater hash
+            if (!entry.is_sent) {
+              float snr = (float)entry.snr_x4 / 4.0f;
+              snprintf(detail_items[signal_detail_idx], sizeof(detail_items[0]),
+                       "[%02X] %d/%.1f Enter=Find", sel_hash, entry.rssi, snr);
+            } else {
+              float rsnr = (float)entry.repeat_snr_x4 / 4.0f;
+              snprintf(detail_items[signal_detail_idx], sizeof(detail_items[0]),
+                       "[%02X] %d/%.1f Enter=Find", sel_hash, entry.repeat_rssi, rsnr);
+            }
+          }
+        }
+
         // Render 3 visible items from scroll offset
         int visible = 3;
         int y = 30;
         for (int i = _msg_detail_scroll; i < _msg_detail_scroll + visible && i < detail_count; i++, y += 12) {
-          if (i < separator_idx) {
-            // Message text: sent=yellow, received=green
-            display.setColor(entry.is_sent ? DisplayDriver::YELLOW : DisplayDriver::GREEN);
-          } else if (i >= reply_start_idx) {
-            // Reply hints/options: green
-            display.setColor(DisplayDriver::GREEN);
-          } else {
-            // Metadata lines + separator
+          bool is_path_line = (_path_sel >= 0) &&
+            ((i == path_detail_idx) || (i == heard_detail_idx));
+          if (is_path_line) {
+            // Render path with per-repeater highlighting
+            const char* text = detail_items[i];
+            // Find the colon to print prefix
+            const char* colon = strchr(text, ':');
+            int prefix_len = colon ? (int)(colon - text + 1) : 0;
             display.setColor(DisplayDriver::LIGHT);
+            display.setCursor(0, y);
+            char prefix[12];
+            if (prefix_len > 0 && prefix_len < (int)sizeof(prefix)) {
+              memcpy(prefix, text, prefix_len);
+              prefix[prefix_len] = '\0';
+              display.print(prefix);
+            }
+            // Now render each repeater hash with color
+            const char* p = text + prefix_len;
+            int rpt_idx = 0;
+            while (*p) {
+              // Each repeater is 2 hex chars, separated by > or ,
+              if ((*p >= '0' && *p <= '9') || (*p >= 'A' && *p <= 'F') || (*p >= 'a' && *p <= 'f')) {
+                display.setColor(rpt_idx == _path_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+                char hex[3] = { p[0], p[1] ? p[1] : '\0', '\0' };
+                display.print(hex);
+                p += (p[1] && p[1] != '>' && p[1] != ',') ? 2 : 1;
+                rpt_idx++;
+              } else {
+                display.setColor(DisplayDriver::LIGHT);
+                char sep[2] = { *p, '\0' };
+                display.print(sep);
+                p++;
+              }
+            }
+          } else {
+            if (i < separator_idx) {
+              display.setColor(entry.is_sent ? DisplayDriver::YELLOW : DisplayDriver::GREEN);
+            } else if (i >= reply_start_idx) {
+              display.setColor(DisplayDriver::GREEN);
+            } else {
+              display.setColor(DisplayDriver::LIGHT);
+            }
+            display.drawTextEllipsized(0, y, display.width(), detail_items[i]);
           }
-          display.drawTextEllipsized(0, y, display.width(), detail_items[i]);
         }
       } else {
         display.setColor(DisplayDriver::YELLOW);
@@ -936,6 +1031,7 @@ public:
         int secs = _rtc->getCurrentTime() - a->recv_timestamp;
         if (secs < 60) {
           sprintf(tmp, "%ds", secs);
+          _needs_fast_refresh = true;
         } else if (secs < 60*60) {
           sprintf(tmp, "%dm", secs / 60);
         } else {
@@ -1056,7 +1152,7 @@ public:
       } else if (_ct_action) {
         // Contact detail + action menu
         ContactInfo ci;
-        if (the_mesh.getContactByIdx(_ct_sorted[_ct_sel], ci)) {
+        if (getContactByKey(_ct_action_key, ci)) {
           display.setColor(DisplayDriver::YELLOW);
           display.drawTextEllipsized(0, 18, display.width(), ci.name);
 
@@ -1196,7 +1292,22 @@ public:
                 else strcpy(suffix, "?");
               }
               snprintf(line, sizeof(line), "%s%s [%s]", is_fav ? "*" : "", ci.name, suffix);
-              display.drawTextEllipsized(8, y, display.width() - 8, line);
+              // Compute contact staleness from lastmod
+              char age_buf[8] = "";
+              if (ci.lastmod > 0) {
+                int secs = _rtc->getCurrentTime() - ci.lastmod;
+                if (secs < 0) secs = 0;
+                if (secs < 60) { snprintf(age_buf, sizeof(age_buf), "%ds", secs); _needs_fast_refresh = true; }
+                else if (secs < 3600) snprintf(age_buf, sizeof(age_buf), "%dm", secs / 60);
+                else if (secs < 86400) snprintf(age_buf, sizeof(age_buf), "%dh", secs / 3600);
+                else snprintf(age_buf, sizeof(age_buf), "%dd", secs / 86400);
+              }
+              int age_w = age_buf[0] ? display.getTextWidth(age_buf) + 4 : 0;
+              display.drawTextEllipsized(8, y, display.width() - 8 - age_w, line);
+              if (age_buf[0]) {
+                display.setCursor(display.width() - display.getTextWidth(age_buf) - 1, y);
+                display.print(age_buf);
+              }
             }
           }
         }
@@ -1220,6 +1331,60 @@ public:
       display.setCursor(0, 53);
       sprintf(tmp, "Noise floor: %d", radio_driver.getNoiseFloor());
       display.print(tmp);
+    } else if (_page == HomePage::PACKETS) {
+      display.setTextSize(1);
+      int total = _task->_pkt_log_count;
+      display.setColor(DisplayDriver::YELLOW);
+      if (total > 0) {
+        snprintf(tmp, sizeof(tmp), "-- Packets %d/%d --", _pkt_sel + 1, total);
+      } else {
+        snprintf(tmp, sizeof(tmp), "-- Packets --");
+      }
+      display.drawTextCentered(display.width() / 2, 18, tmp);
+
+      if (total == 0) {
+        display.setColor(DisplayDriver::LIGHT);
+        display.drawTextCentered(display.width() / 2, 38, "No packets yet");
+      } else {
+        if (_pkt_sel >= total) _pkt_sel = total - 1;
+        // Show 4 visible entries, scrolled so selection is visible
+        int visible = 4;
+        int scroll = 0;
+        if (_pkt_sel >= visible) scroll = _pkt_sel - visible + 1;
+        int y = 24;
+        for (int vi = 0; vi < visible && (scroll + vi) < total; vi++, y += 10) {
+          int item = scroll + vi;
+          int idx = (_task->_pkt_log_next - 1 - item + PACKET_LOG_SIZE) % PACKET_LOG_SIZE;
+          auto& pkt = _task->_pkt_log[idx];
+          const char* type_str;
+          switch (pkt.payload_type) {
+            case 0x00: type_str = "REQ"; break;
+            case 0x01: type_str = "RSP"; break;
+            case 0x02: type_str = "TXT"; break;
+            case 0x03: type_str = "ACK"; break;
+            case 0x04: type_str = "ADV"; break;
+            case 0x05: case 0x06: type_str = "GRP"; break;
+            case 0x07: type_str = "ANO"; break;
+            case 0x08: type_str = "PTH"; break;
+            case 0x09: type_str = "TRC"; break;
+            case 0x0A: type_str = "MPT"; break;
+            case 0x0B: type_str = "CTL"; break;
+            case 0x0F: type_str = "RAW"; break;
+            default:   type_str = "???"; break;
+          }
+          float snr_f = (float)pkt.snr_x4 / 4.0f;
+          unsigned long age_s = (millis() - pkt.timestamp) / 1000;
+          char age_buf[8];
+          if (age_s < 60) { snprintf(age_buf, sizeof(age_buf), "%lus", age_s); _needs_fast_refresh = true; }
+          else if (age_s < 3600) snprintf(age_buf, sizeof(age_buf), "%lum", age_s / 60);
+          else snprintf(age_buf, sizeof(age_buf), "%luh", age_s / 3600);
+          char marker = (item == _pkt_sel) ? '>' : ' ';
+          snprintf(tmp, sizeof(tmp), "%c%s %02X %d/%.1f %s", marker, type_str, pkt.first_hop, pkt.rssi, snr_f, age_buf);
+          display.setColor(item == _pkt_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+          display.setCursor(0, y);
+          display.print(tmp);
+        }
+      }
     } else if (_page == HomePage::BLUETOOTH) {
       display.setColor(DisplayDriver::GREEN);
       display.drawXbm((display.width() - 32) / 2, 18,
@@ -1507,28 +1672,33 @@ public:
       _task->extendAutoOff();
       return 400;
     }
+    if (_needs_fast_refresh) return 1000;  // update live timers every second
     return 5000;   // next render after 5000 ms
   }
 
   bool handleInput(char c) override {
-    if (c == KEY_LEFT || c == KEY_PREV) {
-      _nav_screen_lock = false;
-      _page = (_page + HomePage::Count - 1) % HomePage::Count;
-      return true;
-    }
-    if (c == KEY_NEXT || c == KEY_RIGHT) {
-      _nav_screen_lock = false;
-      _page = (_page + 1) % HomePage::Count;
-      if (_page == HomePage::MESSAGES) {
-        _task->showAlert("Message history", 800);
-      } else if (_page == HomePage::PRESETS) {
-        _task->showAlert("Quick messages", 800);
-      } else if (_page == HomePage::RECENT) {
-        _task->showAlert("Recent adverts", 800);
-      } else if (_page == HomePage::TRACE) {
-        _task->showAlert("Contacts", 800);
+    if (!isUserBusy()) {
+      if (c == KEY_LEFT || c == KEY_PREV) {
+        _nav_screen_lock = false;
+        _page = (_page + HomePage::Count - 1) % HomePage::Count;
+        return true;
       }
-      return true;
+      if (c == KEY_NEXT || c == KEY_RIGHT) {
+        _nav_screen_lock = false;
+        _page = (_page + 1) % HomePage::Count;
+        if (_page == HomePage::MESSAGES) {
+          _task->showAlert("Message history", 800);
+        } else if (_page == HomePage::PRESETS) {
+          _task->showAlert("Quick messages", 800);
+        } else if (_page == HomePage::RECENT) {
+          _task->showAlert("Recent adverts", 800);
+        } else if (_page == HomePage::TRACE) {
+          _task->showAlert("Contacts", 800);
+        } else if (_page == HomePage::PACKETS) {
+          _task->showAlert("Packet log", 800);
+        }
+        return true;
+      }
     }
     if (_page == HomePage::TRACE) {
       if (_ct_status_pending || _ct_status_done) {
@@ -1536,6 +1706,9 @@ public:
           _ct_status_pending = false;
           _ct_status_done = false;
           reselectContact(_ct_target_name);
+          _ct_action = true;  // return to contact card
+          _ct_action_sel = 0;
+          _ct_detail_scroll = 0;
           return true;
         }
         return true;
@@ -1545,6 +1718,9 @@ public:
           _ct_telem_pending = false;
           _ct_telem_done = false;
           reselectContact(_ct_target_name);
+          _ct_action = true;  // return to contact card
+          _ct_action_sel = 0;
+          _ct_detail_scroll = 0;
           return true;
         }
         return true;
@@ -1554,6 +1730,9 @@ public:
           _ct_path_pending = false;
           _ct_path_found = false;
           reselectContact(_ct_target_name);
+          _ct_action = true;  // return to contact card
+          _ct_action_sel = 0;
+          _ct_detail_scroll = 0;
           return true;
         }
         return true;
@@ -1581,7 +1760,7 @@ public:
           } else {
             // Scroll down into info lines
             ContactInfo ci;
-            if (the_mesh.getContactByIdx(_ct_sorted[_ct_sel], ci)) {
+            if (getContactByKey(_ct_action_key, ci)) {
               ContactCache* cc = findCache(ci.id.pub_key);
               int total = _ct_action_count + 1; // +1 for "last heard"
               if (cc && cc->has_path_info) total += 2;
@@ -1594,7 +1773,7 @@ public:
         }
         if (c == KEY_ENTER) {
           ContactInfo ci;
-          if (the_mesh.getContactByIdx(_ct_sorted[_ct_sel], ci)) {
+          if (getContactByKey(_ct_action_key, ci)) {
             // Determine which action was selected
             const char* actions[5];
             uint8_t act_count = 0;
@@ -1681,9 +1860,13 @@ public:
           return true;
         }
         if (c == KEY_ENTER) {
-          _ct_action = true;
-          _ct_action_sel = 0;
-          _ct_detail_scroll = 0;
+          ContactInfo ci;
+          if (the_mesh.getContactByIdx(_ct_sorted[_ct_sel], ci)) {
+            memcpy(_ct_action_key, ci.id.pub_key, PUB_KEY_SIZE);
+            _ct_action = true;
+            _ct_action_sel = 0;
+            _ct_detail_scroll = 0;
+          }
           return true;
         }
       }
@@ -1693,12 +1876,46 @@ public:
       int total = _task->_msg_log_count;
       if (_msg_detail) {
         // In detail view
-        if (c == KEY_CANCEL || c == KEY_LEFT) {
+        if (c == KEY_CANCEL) {
           if (_msg_reply_menu) {
             _msg_reply_menu = false;
+          } else if (_path_sel >= 0) {
+            _path_sel = -1;
           } else {
             _msg_detail = false;
             _msg_detail_scroll = 0;
+            _path_sel = -1;
+          }
+          return true;
+        }
+        // LEFT: go back (deselect repeater, or exit detail)
+        if (c == KEY_LEFT) {
+          if (_path_sel > 0) {
+            _path_sel--;
+          } else if (_path_sel == 0) {
+            _path_sel = -1;
+          } else {
+            // _path_sel == -1: exit detail view
+            _msg_detail = false;
+            _msg_detail_scroll = 0;
+            _path_sel = -1;
+          }
+          return true;
+        }
+        // RIGHT: select repeaters in path (if any)
+        if (c == KEY_RIGHT) {
+          int buf_idx = (_task->_msg_log_next - 1 - _msg_sel + MSG_LOG_SIZE) % MSG_LOG_SIZE;
+          auto& entry = _task->_msg_log[buf_idx];
+          int plen = 0;
+          if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF) {
+            plen = entry.path_len;
+          } else if (entry.is_sent && entry.repeat_path_len > 0) {
+            plen = entry.repeat_path_len;
+          }
+          if (plen > 0) {
+            if (_path_sel < 0) _path_sel = 0;
+            else if (_path_sel < plen - 1) _path_sel++;
+            else _path_sel = -1;  // wrap to deselected
           }
           return true;
         }
@@ -1716,6 +1933,51 @@ public:
             _msg_detail_scroll++;  // clamped during render
             return true;
           }
+        }
+        if (c == KEY_ENTER && _path_sel >= 0 && total > 0) {
+          // Ping selected repeater
+          int buf_idx = (_task->_msg_log_next - 1 - _msg_sel + MSG_LOG_SIZE) % MSG_LOG_SIZE;
+          auto& entry = _task->_msg_log[buf_idx];
+          uint8_t rpt_hash = 0;
+          if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF && _path_sel < entry.path_len) {
+            rpt_hash = entry.path[_path_sel];
+          } else if (entry.is_sent && _path_sel < entry.repeat_path_len) {
+            rpt_hash = entry.repeat_path[_path_sel];
+          }
+          if (rpt_hash != 0) {
+            // Search contacts for matching last pub_key byte
+            ContactInfo ci;
+            int n = the_mesh.getNumContacts();
+            bool found = false;
+            for (int i = 0; i < n; i++) {
+              if (the_mesh.getContactByIdx(i, ci) && ci.id.pub_key[PUB_KEY_SIZE - 1] == rpt_hash) {
+                uint32_t est_timeout;
+                int result = the_mesh.sendPathFind(ci, est_timeout);
+                if (result != MSG_SEND_FAILED) {
+                  _msg_detail = false;
+                  _path_sel = -1;
+                  _page = HomePage::TRACE;
+                  _ct_path_pending = true;
+                  _ct_path_found = false;
+                  _ct_path_timeout = millis() + est_timeout + 2000;
+                  strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
+                  _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
+                  memcpy(_ct_path_key, ci.id.pub_key, PUB_KEY_SIZE);
+                  found = true;
+                } else {
+                  _task->showAlert("Send failed", 800);
+                  found = true;
+                }
+                break;
+              }
+            }
+            if (!found) {
+              char alert[24];
+              snprintf(alert, sizeof(alert), "Unknown repeater %02X", rpt_hash);
+              _task->showAlert(alert, 1000);
+            }
+          }
+          return true;
         }
         if (c == KEY_ENTER && total > 0) {
           int buf_idx = (_task->_msg_log_next - 1 - _msg_sel + MSG_LOG_SIZE) % MSG_LOG_SIZE;
@@ -1853,6 +2115,7 @@ public:
         if (c == KEY_ENTER) {
           _msg_detail = true;
           _msg_detail_scroll = 0;
+          _path_sel = -1;
           return true;
         }
       }
@@ -1989,6 +2252,20 @@ public:
       return true;
     }
 #endif
+    if (_page == HomePage::PACKETS) {
+      int total = _task->_pkt_log_count;
+      if (total > 0) {
+        if (c == KEY_UP) {
+          _pkt_sel = (_pkt_sel + total - 1) % total;
+          return true;
+        }
+        if (c == KEY_DOWN) {
+          _pkt_sel = (_pkt_sel + 1) % total;
+          return true;
+        }
+      }
+      return false;
+    }
     if (c == KEY_UP && _page == HomePage::RADIO) {
       _show_snr = !_show_snr;
       if (_show_snr) _show_voltage = false;
@@ -2809,6 +3086,17 @@ void UITask::sendPresetDM(const ContactInfo& contact) {
   showAlert(result > 0 ? "DM Sent!" : "DM failed", 800);
   _preset_pending = false;
   gotoHomeScreen();
+}
+
+void UITask::logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) {
+  auto& entry = _pkt_log[_pkt_log_next];
+  entry.payload_type = payload_type;
+  entry.first_hop = (path_len > 0 && path != NULL) ? path[0] : 0;
+  entry.rssi = rssi;
+  entry.snr_x4 = snr_x4;
+  entry.timestamp = millis();
+  _pkt_log_next = (_pkt_log_next + 1) % PACKET_LOG_SIZE;
+  if (_pkt_log_count < PACKET_LOG_SIZE) _pkt_log_count++;
 }
 
 void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len, int channel_idx, const char* contact_name, const uint8_t* path, const uint8_t* packet_hash, uint32_t expected_ack) {

@@ -107,6 +107,20 @@ public:
   int _msg_log_count;
   int _msg_log_next;
 
+  // Packet log (circular buffer)
+  struct PacketLogEntry {
+    uint8_t payload_type;
+    uint8_t first_hop;    // path[0] or 0
+    int16_t rssi;
+    int8_t  snr_x4;
+    unsigned long timestamp;  // millis()
+  };
+  #define PACKET_LOG_SIZE 32
+  PacketLogEntry _pkt_log[PACKET_LOG_SIZE];
+  int _pkt_log_count = 0;
+  int _pkt_log_next = 0;
+  void logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) override;
+
   // Pending preset for Channel/DM target selection
   char _pending_preset[80];
   bool _preset_pending;
