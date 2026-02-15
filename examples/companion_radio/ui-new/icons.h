@@ -125,3 +125,8 @@ static const uint8_t muted_icon[] = {
 static const uint8_t envelope_icon[] = {
   0x7F, 0x63, 0x55, 0x49, 0x7F
 };
+
+// 5x7 satellite antenna icon for GPS indicator
+static const uint8_t sat_icon[] = {
+  0x11, 0x0A, 0x04, 0x04, 0x04, 0x04, 0x0E
+};

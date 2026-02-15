@@ -633,28 +633,6 @@ class HomeScreen : public UIScreen {
       }
     }
 
-    // 4. GPS indicator
-#if ENV_INCLUDE_GPS == 1
-    {
-      bool gps_on = _task->getGPSState();
-      if (gps_on) {
-        LocationProvider* nmea = sensors.getLocationProvider();
-        char gps_buf[6];
-        if (nmea == NULL || !nmea->isValid()) {
-          strcpy(gps_buf, "G?");
-        } else {
-          snprintf(gps_buf, sizeof(gps_buf), "G%ld", nmea->satellitesCount());
-        }
-        int gw = (int)strlen(gps_buf) * 6;
-        right_x -= gw;
-        display.setColor(DisplayDriver::LIGHT);
-        display.setCursor(right_x, 3);
-        display.print(gps_buf);
-        right_x -= 2;
-      }
-    }
-#endif
-
     // === CENTER: HH:MM clock ===
     int clock_x = -1;
     {
@@ -679,15 +657,27 @@ class HomeScreen : public UIScreen {
     int left_x = 0;
     int left_max = (clock_x > 0) ? clock_x - 2 : right_x - 2;
 
-    // 1. Node name (home page only)
-    if (!_page_active || _page == HomePage::FIRST) {
-      char filtered_name[sizeof(_node_prefs->node_name)];
-      display.translateUTF8ToBlocks(filtered_name, _node_prefs->node_name, sizeof(filtered_name));
-      display.setColor(DisplayDriver::GREEN);
-      display.drawTextEllipsized(left_x, 3, left_max - left_x, filtered_name);
-      left_x += display.getTextWidth(filtered_name);
-      if (left_x > left_max) left_x = left_max;
+    // 1. GPS indicator (satellite icon + sat count or "?")
+#if ENV_INCLUDE_GPS == 1
+    {
+      bool gps_on = _task->getGPSState();
+      if (gps_on) {
+        display.setColor(DisplayDriver::LIGHT);
+        display.drawXbm(left_x, 4, sat_icon, 5, 7);
+        left_x += 6;
+        LocationProvider* nmea = sensors.getLocationProvider();
+        char gps_num[4];
+        if (nmea == NULL || !nmea->isValid()) {
+          strcpy(gps_num, "?");
+        } else {
+          snprintf(gps_num, sizeof(gps_num), "%ld", nmea->satellitesCount());
+        }
+        display.setCursor(left_x, 3);
+        display.print(gps_num);
+        left_x += (int)strlen(gps_num) * 6;
+      }
     }
+#endif
 
     // 2. Envelope + unread count
     int msg_count = _task->getMsgCount();
@@ -908,31 +898,27 @@ public:
     // === LEVEL 2: INSIDE PAGE (full screen) ===
 
     if (_page == HomePage::FIRST) {
-      display.setColor(DisplayDriver::YELLOW);
-      display.setTextSize(2);
-      sprintf(tmp, "MSG: %d", _task->getMsgCount());
-      display.drawTextCentered(display.width() / 2, TOP_BAR_H + 0, tmp);
+      // === INFO DASHBOARD ===
+      display.setTextSize(1);
+      int cx = display.width() / 2;
 
-      // Show date/time from RTC
+      // Row 1: Node name (the only place the name is shown)
+      display.setColor(DisplayDriver::YELLOW);
+      display.drawTextCentered(cx, TOP_BAR_H + 0, _node_prefs->node_name);
+
+      // Row 2: Full date and time
       {
         uint32_t now = _rtc->getCurrentTime();
         if (now > 1577836800) { // after 2020-01-01
-          // Basic epoch math for DD-MMM HH:MM (no time.h dependency)
           uint32_t t = now + _gmt_offset * 3600;
-          int secs = t % 60; (void)secs;
-          t /= 60;
-          int mins = t % 60;
-          t /= 60;
-          int hours = t % 24;
-          t /= 24;
-          // days since epoch (1970-01-01), compute year/month/day
-          int days = (int)t;
+          int mins = (t / 60) % 60;
+          int hours = (t / 3600) % 24;
+          uint32_t d = t / 86400;
           int year = 1970;
           while (true) {
             int ydays = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ? 366 : 365;
-            if (days < ydays) break;
-            days -= ydays;
-            year++;
+            if ((int)d < ydays) break;
+            d -= ydays; year++;
           }
           static const int mdays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
           static const char* mnames[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
@@ -940,38 +926,85 @@ public:
           int month = 0;
           for (month = 0; month < 12; month++) {
             int md = mdays[month] + ((month == 1 && leap) ? 1 : 0);
-            if (days < md) break;
-            days -= md;
+            if ((int)d < md) break;
+            d -= md;
           }
-          int day = days + 1;
-          snprintf(tmp, sizeof(tmp), "%02d-%s %02d:%02d", day, mnames[month], hours, mins);
-          display.setTextSize(1);
+          int day = (int)d + 1;
+          snprintf(tmp, sizeof(tmp), "%02d-%s-%d %02d:%02d", day, mnames[month], year, hours, mins);
           display.setColor(DisplayDriver::LIGHT);
-          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 18, tmp);
+          display.drawTextCentered(cx, TOP_BAR_H + 10, tmp);
         } else {
-          display.setTextSize(1);
           display.setColor(DisplayDriver::LIGHT);
-          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 18, "No time set");
+          display.drawTextCentered(cx, TOP_BAR_H + 10, "No time set");
         }
       }
 
-      #ifdef WIFI_SSID
+      // Row 3: Battery voltage and percentage
+      {
+        uint16_t mv = _task->getBattMilliVolts();
+        float volts = (float)mv / 1000.0f;
+#ifndef BATT_MIN_MILLIVOLTS
+  #define BATT_MIN_MILLIVOLTS 3000
+#endif
+#ifndef BATT_MAX_MILLIVOLTS
+  #define BATT_MAX_MILLIVOLTS 4200
+#endif
+        int pct = ((int)(mv - BATT_MIN_MILLIVOLTS) * 100) / (BATT_MAX_MILLIVOLTS - BATT_MIN_MILLIVOLTS);
+        if (pct < 0) pct = 0;
+        if (pct > 100) pct = 100;
+        snprintf(tmp, sizeof(tmp), "Batt: %.2fV %d%%", volts, pct);
+        display.setColor(DisplayDriver::GREEN);
+        display.drawTextCentered(cx, TOP_BAR_H + 20, tmp);
+      }
+
+      // Row 4: Messages + GPS status
+      {
+        char line[32];
+        int mc = _task->getMsgCount();
+#if ENV_INCLUDE_GPS == 1
+        bool gps_on = _task->getGPSState();
+        const char* gps_str;
+        char gps_buf[12];
+        if (!gps_on) {
+          gps_str = "GPS:off";
+        } else {
+          LocationProvider* nmea = sensors.getLocationProvider();
+          if (nmea == NULL || !nmea->isValid()) {
+            gps_str = "GPS:no fix";
+          } else {
+            snprintf(gps_buf, sizeof(gps_buf), "GPS:%ldsat", nmea->satellitesCount());
+            gps_str = gps_buf;
+          }
+        }
+        snprintf(line, sizeof(line), "Msg:%d  %s", mc, gps_str);
+#else
+        snprintf(line, sizeof(line), "Msg:%d", mc);
+#endif
+        display.setColor(DisplayDriver::LIGHT);
+        display.drawTextCentered(cx, TOP_BAR_H + 30, line);
+      }
+
+      // Row 5: Connection status
+#ifdef WIFI_SSID
+      {
         IPAddress ip = WiFi.localIP();
-        snprintf(tmp, sizeof(tmp), "IP: %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
-        display.setTextSize(1);
-        display.drawTextCentered(display.width() / 2, TOP_BAR_H + 36, tmp);
-      #endif
+        snprintf(tmp, sizeof(tmp), "IP:%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+        display.setColor(DisplayDriver::LIGHT);
+        display.drawTextCentered(cx, TOP_BAR_H + 40, tmp);
+      }
+#else
       if (_task->hasConnection()) {
         display.setColor(DisplayDriver::GREEN);
-        display.setTextSize(1);
-        display.drawTextCentered(display.width() / 2, TOP_BAR_H + 28, "< Connected >");
-
-      } else if (the_mesh.getBLEPin() != 0) { // BT pin
+        display.drawTextCentered(cx, TOP_BAR_H + 40, "BT: Connected");
+      } else if (the_mesh.getBLEPin() != 0) {
         display.setColor(DisplayDriver::RED);
-        display.setTextSize(2);
-        sprintf(tmp, "Pin:%d", the_mesh.getBLEPin());
-        display.drawTextCentered(display.width() / 2, TOP_BAR_H + 28, tmp);
+        snprintf(tmp, sizeof(tmp), "Pin: %d", the_mesh.getBLEPin());
+        display.drawTextCentered(cx, TOP_BAR_H + 40, tmp);
+      } else {
+        display.setColor(DisplayDriver::LIGHT);
+        display.drawTextCentered(cx, TOP_BAR_H + 40, "BT: Waiting...");
       }
+#endif
     } else if (_page == HomePage::MESSAGES) {
       display.setTextSize(1);
 
