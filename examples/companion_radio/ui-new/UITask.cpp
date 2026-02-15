@@ -3053,7 +3053,7 @@ public:
       }
       // Back out of contact list
       if (c == KEY_CANCEL) {
-        _page = HomePage::FIRST;
+        _page_active = false;
         return true;
       }
       // Contact filter: LEFT/RIGHT cycles filter

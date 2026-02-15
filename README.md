@@ -18,12 +18,12 @@ Message count, date/time, and connection status. Shows BLE pairing PIN when wait
 
 ### Messages
 
-Scrollable message log with channel filtering (LEFT/RIGHT to cycle filters). Messages are displayed oldest-at-top / newest-at-bottom. Delivery status, repeat counts, and last-hop hash prefixes are shown. Prefix stays fixed while message text scrolls horizontally on selection.
+Scrollable message log with channel filtering (LEFT/RIGHT to cycle filters). Messages are displayed oldest-at-top / newest-at-bottom. In channel-specific views, the redundant channel name is omitted from each line to save space. Delivery status, repeat counts, and last-hop hash prefixes are shown. Prefix stays fixed while message text scrolls horizontally on selection. A dim `...` hint appears at the bottom when on the last message to indicate compose is below.
 
-**Quick-Send Compose** (DOWN past newest message):
+**Quick-Send Compose** (DOWN past last message, or UP dismisses back):
 - In a filtered channel/DM tab: opens an overlay with `[Keyboard]` (full compose) and preset quick messages for one-tap sending
 - In the "All" tab: opens a Channel/DM chooser, then proceeds to channel or contact selection and compose
-- After sending, the message list returns to the matching channel or DM filter tab automatically
+- After sending, the message list scrolls to the latest message and returns to the matching filter tab
 
 **Message Detail** (ENTER on a message):
 - Full word-wrapped text, timestamp, sender/recipient, hop count
@@ -36,10 +36,6 @@ Scrollable message log with channel filtering (LEFT/RIGHT to cycle filters). Mes
 ### Quick Msg
 
 Preset quick messages loaded from `/presets.txt` on the device filesystem (one per line). Includes options to compose custom messages, reply DM, send GPS coordinates, and send to channels. Presets can be added, edited, and deleted from the menu.
-
-### Recent
-
-List of recently heard nodes with names and time since last heard.
 
 ### Contacts
 
@@ -58,15 +54,19 @@ All async operations (path discovery, telemetry, status, location requests) show
 
 Active discovery of nearby repeaters and sensors. Press ENTER to scan; results appear within 8 seconds. Shows discovered nodes with hash prefix, name (or `<XX> ???` if unknown), and SNR.
 
-ENTER on a result opens the action menu (same as Contacts) if the node is in the contact database. Press ENTER again to rescan at any time.
+ENTER on a result opens the action menu (same as Contacts) if the node is in the contact database. Press RIGHT to rescan at any time.
 
-### Radio
+### Recent
 
-Displays current radio configuration: frequency, spreading factor, bandwidth, coding rate, TX power, and noise floor.
+List of recently heard nodes with names and time since last heard.
 
 ### Packets
 
 Raw packet log showing packet type, first hop, RSSI, SNR, and age. Press ENTER for detail view with full type name, route type, signal info, path chain, and payload size. UP/DOWN to scroll through packets and detail items.
+
+### Radio
+
+Displays current radio configuration: frequency, spreading factor, bandwidth, coding rate, TX power, and noise floor.
 
 ### Advert
 
@@ -91,11 +91,11 @@ Live sensor data display (battery voltage, temperature, humidity, pressure, alti
 
 ### Settings
 
-Toggle options: GMT offset (LEFT/RIGHT to adjust -12 to +14, applies to message timestamps), battery voltage display, SNR/RSSI bar, speed HUD, Bluetooth, and GPS.
+Toggle options: GMT offset (LEFT/RIGHT to adjust -12 to +14, applies to home screen clock and message timestamps), battery voltage display, SNR/RSSI bar, speed HUD, Bluetooth, and GPS.
 
-### Shutdown
+### Hibernate
 
-Hibernate the device.
+Power off the device.
 
 ## Top Bar
 
