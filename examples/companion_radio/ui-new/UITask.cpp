@@ -2585,17 +2585,17 @@ public:
           display.drawTextCentered(display.width() / 2, TOP_BAR_H, "--");
         }
 
-        // Satellite count (right)
+        // Satellite count (right, below name row)
         char satbuf[8];
         snprintf(satbuf, sizeof(satbuf), "%ldsat", nmea->satellitesCount());
         display.setColor(DisplayDriver::LIGHT);
         int satW = display.getTextWidth(satbuf);
-        display.setCursor(display.width() - satW - 1, TOP_BAR_H);
+        display.setCursor(display.width() - satW - 1, TOP_BAR_H + 10);
         display.print(satbuf);
 
         // === Center: Compass rose ===
         int cx = display.width() / 2;
-        int cy = TOP_BAR_H + 24;
+        int cy = TOP_BAR_H + 30;
         int r = 12;
 
         // Draw compass circle using small dots
@@ -2714,7 +2714,7 @@ public:
           } else {
             snprintf(distbuf, sizeof(distbuf), "%.1fmi", wp_dist_mi);
           }
-          display.setCursor(0, 55);
+          display.setCursor(0, 56);
           display.print(distbuf);
 
           // ETE from VMG (right)
@@ -2734,7 +2734,7 @@ public:
             strcpy(etebuf, "--");
           }
           int eteW = display.getTextWidth(etebuf);
-          display.setCursor(display.width() - eteW - 1, 55);
+          display.setCursor(display.width() - eteW - 1, 56);
           display.print(etebuf);
         } else {
           // Default: alt + odometer
@@ -2742,7 +2742,7 @@ public:
           float alt_ft = nmea->getAltitude() / 1000.0f * 3.28084f;
           char altbuf[12];
           snprintf(altbuf, sizeof(altbuf), "%.0fft", alt_ft);
-          display.setCursor(0, 55);
+          display.setCursor(0, 56);
           display.print(altbuf);
 
           // Odometer (right side of same row)
@@ -2753,7 +2753,7 @@ public:
             snprintf(odobuf, sizeof(odobuf), "%.1fmi", _odometer);
           }
           int odoW = display.getTextWidth(odobuf);
-          display.setCursor(display.width() - odoW - 1, 55);
+          display.setCursor(display.width() - odoW - 1, 56);
           display.print(odobuf);
         }
       }
