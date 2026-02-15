@@ -187,11 +187,11 @@ class HomeScreen : public UIScreen {
     FIRST,
     MESSAGES,
     PRESETS,
-    RECENT,
     TRACE,
     NEARBY,
-    RADIO,
+    RECENT,
     PACKETS,
+    RADIO,
     ADVERT,
 #if ENV_INCLUDE_GPS == 1
     GPS,
@@ -680,7 +680,7 @@ public:
         case FIRST: page_title = "Home"; {
           uint32_t now = _rtc->getCurrentTime();
           if (now > 1577836800) {
-            uint32_t t = now; int mins = (t/60)%60; int hours = (t/3600)%24;
+            uint32_t t = now + _gmt_offset * 3600; int mins = (t/60)%60; int hours = (t/3600)%24;
             snprintf(summary_buf, sizeof(summary_buf), "%02d:%02d", hours, mins);
           } else { strcpy(summary_buf, "No time set"); }
           page_summary = summary_buf;
@@ -758,7 +758,7 @@ public:
         uint32_t now = _rtc->getCurrentTime();
         if (now > 1577836800) { // after 2020-01-01
           // Basic epoch math for DD-MMM HH:MM (no time.h dependency)
-          uint32_t t = now;
+          uint32_t t = now + _gmt_offset * 3600;
           int secs = t % 60; (void)secs;
           t /= 60;
           int mins = t % 60;
@@ -1192,7 +1192,7 @@ public:
         char hdr[40];
         // Show filter name in header
         if (_msg_filter == 0) {
-          snprintf(hdr, sizeof(hdr), "-- All (%d/%d) --",
+          snprintf(hdr, sizeof(hdr), "- All (%d/%d) -",
                    filtered_total > 0 ? _msg_sel + 1 : 0, filtered_total);
         } else {
           int fval = _msg_filter_channels[_msg_filter];
@@ -1203,14 +1203,14 @@ public:
             if (the_mesh.getChannel(fval, cd)) {
               ch_name = cd.name;
             }
-            snprintf(hdr, sizeof(hdr), "-- %s%s (%d/%d) --",
+            snprintf(hdr, sizeof(hdr), "- %s%s (%d/%d) -",
                      ch_name[0] == '#' ? "" : "#", ch_name,
                      filtered_total > 0 ? _msg_sel + 1 : 0, filtered_total);
           } else {
             // DM filter
             int dm_idx = -fval - 2;
             const char* dm_name = (dm_idx >= 0 && dm_idx < 4) ? _msg_filter_dm_names[dm_idx] : "?";
-            snprintf(hdr, sizeof(hdr), "-- DM:%s (%d/%d) --",
+            snprintf(hdr, sizeof(hdr), "- DM:%s (%d/%d) -",
                      dm_name, filtered_total > 0 ? _msg_sel + 1 : 0, filtered_total);
           }
         }
@@ -1252,6 +1252,9 @@ public:
         } else if (filtered_total == 0) {
           display.setColor(DisplayDriver::LIGHT);
           display.drawTextCentered(display.width() / 2, TOP_BAR_H + 24, "No messages yet");
+          // Hint: compose is below
+          display.setColor(DisplayDriver::LIGHT);
+          display.drawTextCentered(display.width() / 2, 57, "...");
         } else if (_msg_filter > 0) {
           // === Multi-line rendering for filtered views ===
           // Reset vscroll when selection changes
@@ -1395,6 +1398,11 @@ public:
               // This message was entirely above the visible area, skip it
             }
           }
+          // Hint: compose is below when on last message
+          if (_msg_sel >= filtered_total - 1) {
+            display.setColor(DisplayDriver::LIGHT);
+            display.drawTextCentered(display.width() / 2, 57, "...");
+          }
         } else if (_msg_target_menu) {
           // === Channel/DM target chooser overlay (All tab) ===
           int y = TOP_BAR_H + 16;
@@ -1478,6 +1486,11 @@ public:
               snprintf(full, sizeof(full), "%s%s", prefix, line);
               display.drawTextEllipsized(8, y, avail_w, full);
             }
+          }
+          // Hint: compose is below when on last message
+          if (_msg_sel >= filtered_total - 1) {
+            display.setColor(DisplayDriver::LIGHT);
+            display.drawTextCentered(display.width() / 2, 57, "...");
           }
         }
       }
@@ -3525,6 +3538,7 @@ public:
         int total_items = 1 + preset_count;
         if (c == KEY_UP) {
           if (_msg_compose_sel > 0) _msg_compose_sel--;
+          else _msg_compose_menu = false;
           return true;
         }
         if (c == KEY_DOWN) {
@@ -3612,6 +3626,7 @@ public:
                 if (!found) _task->showAlert("Contact not found", 800);
               }
             }
+            _msg_sel = 0xFF;  // scroll to latest after send
             _msg_compose_menu = false;
             return true;
           }
@@ -3620,8 +3635,13 @@ public:
       }
       // Channel/DM target chooser (All tab)
       if (_msg_target_menu) {
-        if (c == KEY_UP || c == KEY_DOWN) {
-          _msg_target_sel = 1 - _msg_target_sel;
+        if (c == KEY_UP) {
+          if (_msg_target_sel > 0) _msg_target_sel--;
+          else _msg_target_menu = false;
+          return true;
+        }
+        if (c == KEY_DOWN) {
+          if (_msg_target_sel < 1) _msg_target_sel++;
           return true;
         }
         if (c == KEY_CANCEL) {
