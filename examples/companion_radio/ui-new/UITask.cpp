@@ -661,7 +661,8 @@ class HomeScreen : public UIScreen {
         }
       }
 
-      // --- Draw right-to-left: RX hex + bars (R on bar0), gap, TX hex + bars (T on bar0) ---
+      // --- Draw right-to-left: RX hex, gap, bars+arrow, gap, TX hex, gap, bars+arrow ---
+      // Arrow icons (3x5px) drawn above bar 0 instead of text labels
 
       // RX hex ID
       if (has_rx && rx_id != 0) {
@@ -671,14 +672,19 @@ class HomeScreen : public UIScreen {
         display.setColor(DisplayDriver::LIGHT);
         display.setCursor(right_x, 3);
         display.print(hex_id);
+        right_x -= 2;  // gap between hex and bars
       }
 
-      // RX bars with "R" label stacked on bar 0
+      // RX bars with down-arrow (▼) on bar 0
       right_x -= bars_w;
       int bars_x = right_x;
+      // Draw down-arrow above bar 0 (3x5px at bars_x, bars_y)
       display.setColor(DisplayDriver::LIGHT);
-      display.setCursor(bars_x, bars_y);
-      display.print("R");  // drawn first, bars overlay on top
+      display.fillRect(bars_x, bars_y, 3, 1);      // ███
+      display.fillRect(bars_x, bars_y + 1, 2, 1);  // ██.
+      display.fillRect(bars_x + 1, bars_y + 1, 1, 1); // overlap center
+      display.fillRect(bars_x + 1, bars_y + 2, 1, 1); // .█.
+      // Draw bars on top
       for (int b = 0; b < 4; b++) {
         int bh = 3 + b * 2;
         int bx = bars_x + b * 3;
@@ -703,13 +709,17 @@ class HomeScreen : public UIScreen {
         display.setColor(DisplayDriver::LIGHT);
         display.setCursor(right_x, 3);
         display.print(tx_hex);
+        right_x -= 2;  // gap between hex and bars
 
-        // TX bars with "T" label stacked on bar 0
+        // TX bars with up-arrow (▲) on bar 0
         right_x -= bars_w;
         bars_x = right_x;
+        // Draw up-arrow above bar 0 (3x3px at bars_x, bars_y)
         display.setColor(DisplayDriver::LIGHT);
-        display.setCursor(bars_x, bars_y);
-        display.print("T");  // drawn first, bars overlay on top
+        display.fillRect(bars_x + 1, bars_y, 1, 1);     // .█.
+        display.fillRect(bars_x, bars_y + 1, 3, 1);      // ███
+        display.fillRect(bars_x + 1, bars_y + 2, 1, 1);  // .█.
+        // Draw bars on top
         for (int b = 0; b < 4; b++) {
           int bh = 3 + b * 2;
           int bx = bars_x + b * 3;
@@ -727,8 +737,11 @@ class HomeScreen : public UIScreen {
       right_x -= 1;
     }
 
-    // === CENTER: HH:MM clock ===
-    int clock_x = -1;
+    // === LEFT ZONE (packed from left edge) ===
+    int left_x = 0;
+    int left_max = right_x - 2;
+
+    // 1. HH:MM clock
     {
       uint32_t now = _rtc->getCurrentTime();
       if (now > 1577836800) {
@@ -737,21 +750,14 @@ class HomeScreen : public UIScreen {
         int hours = (t / 3600) % 24;
         char clk[6];
         snprintf(clk, sizeof(clk), "%02d:%02d", hours, mins);
-        int cw = 5 * 6;  // 5 chars * 6px
-        clock_x = (display.width() - cw) / 2;
-        // Ensure clock doesn't overlap right zone
-        if (clock_x + cw > right_x) clock_x = right_x - cw - 1;
         display.setColor(DisplayDriver::GREEN);
-        display.setCursor(clock_x, 3);
+        display.setCursor(left_x, 3);
         display.print(clk);
+        left_x += 5 * 6;  // 5 chars * 6px
       }
     }
 
-    // === LEFT ZONE (packed from left edge) ===
-    int left_x = 0;
-    int left_max = (clock_x > 0) ? clock_x - 2 : right_x - 2;
-
-    // 1. GPS indicator (satellite icon + sat count or "?")
+    // 2. GPS indicator (satellite icon + sat count or "?")
 #if ENV_INCLUDE_GPS == 1
     {
       bool gps_on = _task->getGPSState();
@@ -773,7 +779,7 @@ class HomeScreen : public UIScreen {
     }
 #endif
 
-    // 2. Envelope + unread count
+    // 3. Envelope + unread count
     int msg_count = _task->getMsgCount();
     if (msg_count > 0) {
       if (left_x > 0) left_x += 2;
@@ -791,7 +797,7 @@ class HomeScreen : public UIScreen {
       }
     }
 
-    // 3. Speed/compass (auto when GPS speed > 2mph)
+    // 4. Speed/compass (auto when GPS speed > 2mph)
 #if ENV_INCLUDE_GPS == 1
     if (_show_speed) {
       LocationProvider* nmea = sensors.getLocationProvider();
