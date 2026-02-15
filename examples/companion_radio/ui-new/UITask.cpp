@@ -607,9 +607,8 @@ class HomeScreen : public UIScreen {
       bool use_live = _task->_last_rx_time > 0 &&
                       (millis() - _task->_last_rx_time) / 1000 < 300;
       if (use_cycling && use_live && _task->_last_rx_time > _task->_rx_signal_time) {
-        // Don't let live packet override until cycling has shown each repeater at least twice
-        unsigned long min_duration = (unsigned long)_task->_rx_signal_count * 2 * 2000;
-        if (millis() - _task->_rx_signal_time >= min_duration) {
+        // Don't let live packet override until cycling has completed 2 full rotations
+        if (_task->_rx_full_cycles >= 2) {
           use_cycling = false;  // cycling done, allow live packet
         }
       }
@@ -617,7 +616,11 @@ class HomeScreen : public UIScreen {
         has_rx = true;
         _needs_fast_refresh = true;
         if (_task->_rx_signal_count > 1 && millis() - _task->_rx_cycle_time > 2000) {
-          _task->_rx_signal_cycle = (_task->_rx_signal_cycle + 1) % _task->_rx_signal_count;
+          uint8_t prev = _task->_rx_signal_cycle;
+          _task->_rx_signal_cycle = (prev + 1) % _task->_rx_signal_count;
+          if (_task->_rx_signal_cycle < prev) {
+            _task->_rx_full_cycles++;  // wrapped around
+          }
           _task->_rx_cycle_time = millis();
         }
         auto& rxe = _task->_rx_signals[_task->_rx_signal_cycle];
@@ -5611,6 +5614,7 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
         _rx_signal_time = millis();
         _rx_signal_cycle = 0;
         _rx_cycle_time = millis();
+        _rx_full_cycles = 0;
       }
       // Add heard repeaters to auto-ping queue (accumulate, don't reset in-flight pings)
       bool was_empty = (_auto_ping_queue_count == 0);

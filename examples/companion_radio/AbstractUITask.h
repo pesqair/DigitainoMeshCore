@@ -81,6 +81,7 @@ public:
   uint8_t _rx_signal_cycle = 0;
   unsigned long _rx_signal_time = 0;
   unsigned long _rx_cycle_time = 0;
+  uint8_t _rx_full_cycles = 0;       // completed full rotations
 
   virtual void onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature, float gps_lat = 0, float gps_lon = 0) { }
   virtual void onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, uint16_t batt_mv) { }
