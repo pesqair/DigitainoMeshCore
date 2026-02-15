@@ -472,7 +472,7 @@ int MyMesh::sendPing(const ContactInfo& contact, uint32_t& est_timeout) {
   est_timeout = calcDirectTimeoutMillisFor(t, 6);
   ui_pending_ping_tag = tag;
   ui_pending_ping_start = millis();
-  return 0;
+  return 1;  // non-zero = success (MSG_SEND_FAILED is 0)
 }
 
 void MyMesh::startDiscoveryScan(uint32_t tag) {
