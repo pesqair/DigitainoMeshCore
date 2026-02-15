@@ -855,6 +855,7 @@ public:
         int path_count_for_nav = 0;
         int heard_detail_idx = -1;
         int heard_count_for_nav = 0;
+        int heard_rpt_map[MAX_PATH_SIZE]; // maps display index -> repeat_path[] index
 
         // Sent messages: Repeats, repeat Signal, repeat Path (Heard by)
         if (entry.is_sent && entry.heard_repeats > 0) {
@@ -871,17 +872,24 @@ public:
           }
 
           if (entry.repeat_path_len > 0) {
-            heard_detail_idx = detail_count;
-            heard_count_for_nav = entry.repeat_path_len;
+            // Build heard-by list, only including repeaters with signal data
+            int heard_shown = 0;
             char* p = detail_items[detail_count];
             int pos = snprintf(p, sizeof(detail_items[0]), "Heard by:");
             for (int i = 0; i < entry.repeat_path_len && pos < (int)sizeof(detail_items[0]) - 4; i++) {
-              if (i > 0) {
+              if (entry.repeat_path_rssi[i] == 0) continue; // skip no-signal (intermediate hops)
+              if (heard_shown > 0) {
                 pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, ",");
               }
+              heard_rpt_map[heard_shown] = i; // map display index -> repeat_path index
               pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, "%02X", entry.repeat_path[i]);
+              heard_shown++;
             }
-            detail_count++;
+            if (heard_shown > 0) {
+              heard_detail_idx = detail_count;
+              heard_count_for_nav = heard_shown;
+              detail_count++;
+            }
           }
         }
 
@@ -959,9 +967,11 @@ public:
 
         // Update Signal line for sent messages when a repeater is selected
         if (entry.is_sent && _path_sel >= 0 && signal_detail_idx >= 0 && heard_detail_idx >= 0) {
-          uint8_t sel_hash = entry.repeat_path[_path_sel];
-          int16_t sel_rssi = entry.repeat_path_rssi[_path_sel];
-          float sel_snr = (float)entry.repeat_path_snr_x4[_path_sel] / 4.0f;
+          // Map display index to actual repeat_path index
+          int rp_idx = (_path_sel < heard_count_for_nav) ? heard_rpt_map[_path_sel] : _path_sel;
+          uint8_t sel_hash = entry.repeat_path[rp_idx];
+          int16_t sel_rssi = entry.repeat_path_rssi[rp_idx];
+          float sel_snr = (float)entry.repeat_path_snr_x4[rp_idx] / 4.0f;
           if (sel_rssi != 0) {
             snprintf(detail_items[signal_detail_idx], sizeof(detail_items[0]),
                      "[%02X] %d/%.1f", sel_hash, sel_rssi, sel_snr);
@@ -2193,7 +2203,10 @@ public:
           if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF) {
             plen = entry.path_len;
           } else if (entry.is_sent && entry.repeat_path_len > 0) {
-            plen = entry.repeat_path_len;
+            // Count only repeaters with signal data (matching display filter)
+            for (int r = 0; r < entry.repeat_path_len; r++) {
+              if (entry.repeat_path_rssi[r] != 0) plen++;
+            }
           }
           if (plen > 0) {
             if (c == KEY_RIGHT) {
@@ -2230,8 +2243,16 @@ public:
           uint8_t rpt_hash = 0;
           if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF && _path_sel < entry.path_len) {
             rpt_hash = entry.path[_path_sel];
-          } else if (entry.is_sent && _path_sel < entry.repeat_path_len) {
-            rpt_hash = entry.repeat_path[_path_sel];
+          } else if (entry.is_sent) {
+            // Map display index to actual repeat_path index (filtered by signal)
+            int mapped = 0, disp_idx = 0;
+            for (int r = 0; r < entry.repeat_path_len; r++) {
+              if (entry.repeat_path_rssi[r] != 0) {
+                if (disp_idx == _path_sel) { mapped = r; break; }
+                disp_idx++;
+              }
+            }
+            if (mapped < entry.repeat_path_len) rpt_hash = entry.repeat_path[mapped];
           }
           if (rpt_hash != 0) {
             // Search contacts for matching last pub_key byte
