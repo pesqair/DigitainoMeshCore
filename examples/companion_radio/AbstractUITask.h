@@ -48,6 +48,8 @@ public:
   virtual void onRxPacket(uint8_t first_path_byte, int16_t rssi, int8_t snr_x4) {
     // Suppress live RX updates while auto-pings are in progress
     if (_auto_ping_queue_count > 0 && (_auto_ping_next < _auto_ping_queue_count || _auto_ping_pending)) return;
+    // New packet breaks synced cycling — RX goes back to live
+    _signal_synced = false;
     _last_rx_id = first_path_byte; _last_rx_time = millis(); _last_rx_rssi = rssi; _last_rx_snr_x4 = snr_x4;
   }
   virtual void onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_x4) { }
