@@ -3579,8 +3579,8 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
         bool found = false;
         for (int r = 0; r < entry.repeat_path_len; r++) {
           if (entry.repeat_path[r] == path[p]) {
-            // Update signal: always for direct hop, or if no prior data
-            if (p == 0 || entry.repeat_path_rssi[r] == 0) {
+            // Update signal only for direct hop (path[0] = transmitter to us)
+            if (p == 0) {
               entry.repeat_path_rssi[r] = rssi;
               entry.repeat_path_snr_x4[r] = snr_x4;
             }
@@ -3591,10 +3591,14 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
         if (!found && entry.repeat_path_len < MAX_PATH_SIZE) {
           int idx = entry.repeat_path_len++;
           entry.repeat_path[idx] = path[p];
-          // Store packet signal for all repeaters in path
-          // (path[0] = direct signal, others = packet-level proxy)
-          entry.repeat_path_rssi[idx] = rssi;
-          entry.repeat_path_snr_x4[idx] = snr_x4;
+          // Only path[0] has measurable signal (direct transmitter to us)
+          if (p == 0) {
+            entry.repeat_path_rssi[idx] = rssi;
+            entry.repeat_path_snr_x4[idx] = snr_x4;
+          } else {
+            entry.repeat_path_rssi[idx] = 0;
+            entry.repeat_path_snr_x4[idx] = 0;
+          }
         }
       }
       break;
