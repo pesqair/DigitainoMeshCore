@@ -1333,8 +1333,7 @@ public:
             sel_start_line += msg_lines;
           }
           // Adjust vscroll to keep selected message visible
-          if (sel_start_line < _msg_vscroll) _msg_vscroll = sel_start_line;
-          // Compute lines for selected message to ensure its end is visible
+          // First try to show the end of the message
           {
             int log_idx = getFilteredMsgIndex(_msg_sel);
             if (log_idx >= 0) {
@@ -1368,6 +1367,8 @@ public:
                 _msg_vscroll = sel_end_line - display_lines;
             }
           }
+          // Then ensure the START is always visible (takes precedence over end)
+          if (sel_start_line < _msg_vscroll) _msg_vscroll = sel_start_line;
           if (_msg_vscroll < 0) _msg_vscroll = 0;
 
           // Now render: walk messages, skip display lines before _msg_vscroll
