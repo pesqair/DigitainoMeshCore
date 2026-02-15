@@ -1423,7 +1423,9 @@ public:
         ContactInfo ci;
         if (getContactByKey(_ct_action_key, ci)) {
           display.setColor(DisplayDriver::YELLOW);
-          display.drawTextEllipsized(0, TOP_BAR_H, display.width(), ci.name);
+          char ct_hdr[48];
+          snprintf(ct_hdr, sizeof(ct_hdr), "<%02X> %s", ci.id.pub_key[PUB_KEY_SIZE - 1], ci.name);
+          display.drawTextEllipsized(0, TOP_BAR_H, display.width(), ct_hdr);
 
           // Build combined list: actions first, then cached info lines
           const char* items[14];
@@ -1545,6 +1547,14 @@ public:
                 display.print(">");
               }
               display.setColor(v == _ct_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+              // Hash prefix
+              uint8_t hash = ci.id.pub_key[PUB_KEY_SIZE - 1];
+              char prefix[8];
+              snprintf(prefix, sizeof(prefix), "<%02X>", hash);
+              display.setCursor(8, y);
+              display.print(prefix);
+              int prefix_w = display.getTextWidth(prefix);
+              // Name with suffix
               char line[48];
               bool is_fav = (ci.flags & 0x01) != 0;
               char suffix[12] = "";
@@ -1573,7 +1583,23 @@ public:
                 else snprintf(age_buf, sizeof(age_buf), "%dd", secs / 86400);
               }
               int age_w = age_buf[0] ? display.getTextWidth(age_buf) + 4 : 0;
-              display.drawTextEllipsized(8, y, display.width() - 8 - age_w, line);
+              int name_x = 8 + prefix_w + 2;
+              int name_avail = display.width() - name_x - age_w;
+              // Truncate name if needed (no ellipsis)
+              display.setCursor(name_x, y);
+              if (display.getTextWidth(line) <= name_avail) {
+                display.print(line);
+              } else {
+                // Print chars that fit
+                char trunc[48];
+                strncpy(trunc, line, sizeof(trunc));
+                trunc[sizeof(trunc) - 1] = '\0';
+                int len = strlen(trunc);
+                while (len > 0 && display.getTextWidth(trunc) > name_avail) {
+                  trunc[--len] = '\0';
+                }
+                display.print(trunc);
+              }
               if (age_buf[0]) {
                 display.setCursor(display.width() - display.getTextWidth(age_buf) - 1, y);
                 display.print(age_buf);
@@ -2141,6 +2167,11 @@ public:
           }
           return true;
         }
+        return true;
+      }
+      // Back out of contact list
+      if (c == KEY_CANCEL) {
+        _page = HomePage::FIRST;
         return true;
       }
       // Contact filter: LEFT/RIGHT cycles filter
