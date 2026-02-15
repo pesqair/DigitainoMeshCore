@@ -8,57 +8,106 @@ This is a customized version of MeshCore firmware specifically tailored for pers
 
 **Upstream Project:** [MeshCore by ripplebiz](https://github.com/ripplebiz/MeshCore)
 
-## Features Added
+## UI Pages
 
-### Messaging
-- **QWERTY keyboard** with lowercase default, SHIFT toggle, and ESC key
-- **Two-line compose area** with visible prefix and message text
-- **Message history** with scrollable list showing sent/received messages
-- **Message list prefixes**: sent DMs show `(D)` when delivered, sent messages show `(N)` repeat count, incoming multi-hop messages show `<AB>` last-repeater hash
-- **Prefix stays fixed** while message text scrolls horizontally
-- **Message detail view** with timestamp, hop count, signal info, and path display
-- **Reply options**: reply on channel (with @mention), reply via DM, or reply to DM sender
-- **DM delivery receipts**: sent DMs show "Delivered" or "Pending..." in detail view when ACK tracking is active
-- **Message resend**: sent messages with no heard repeats (and undelivered DMs) show "Resend" option; resending updates TX count and re-tracks repeats
-- **Non-interrupting notifications** — incoming messages don't disrupt compose/typing
+The home screen is a carousel of pages navigated with LEFT/RIGHT. Press ENTER to activate a page, CANCEL to return to the carousel.
+
+### Home
+
+Message count, date/time, and connection status. Shows BLE pairing PIN when waiting for pairing.
+
+### Messages
+
+Scrollable message log with channel filtering (LEFT/RIGHT to cycle filters). Messages show delivery status, repeat counts, and last-hop hash prefixes. Prefix stays fixed while message text scrolls horizontally on selection.
+
+**Message Detail** (ENTER on a message):
+- Full word-wrapped text, timestamp, sender/recipient, hop count
+- Signal info (RSSI and SNR) for received messages
+- Path chain with per-repeater selection (LEFT/RIGHT to highlight individual hops)
+- Sent message tracking: repeat count, heard-by repeater list with per-repeater signal
+- DM delivery receipts (Delivered / Pending)
+- Reply options: Reply on channel, Reply DM, or Resend
+
+### Quick Msg
+
+Preset quick messages loaded from `/presets.txt` on the device filesystem (one per line). Includes options to compose custom messages, reply DM, send GPS coordinates, and send to channels. Presets can be added, edited, and deleted from the menu.
+
+### Recent
+
+List of recently heard nodes with names and time since last heard.
 
 ### Contacts
-- **Contacts page** with list of all known contacts sorted by most recently heard
-- **Last heard time** displayed for each contact
-- **Contact detail view** with action menu: Send DM, Request Telemetry, Request Status
-- **Cached contact info**: RSSI, SNR, and repeater hop hashes shown in contact list
-- **Telemetry display**: voltage and temperature from remote nodes
-- **Status display**: uptime and battery millivolts from remote nodes
 
-### Radio & Signal
-- **Sent message repeat tracking**: counts how many times your packet was heard retransmitted
-- **Unique repeater accumulation**: "Heard by" shows all unique repeater hashes across all bounces (not just the last path)
-- **Received message signal**: RSSI (dBm) and SNR (dB) displayed in message detail for incoming messages
-- **Repeat signal**: RSSI/SNR of the most recent heard retransmission shown in sent message detail
-- **Contact signal info**: cached RSSI and SNR shown in contact detail view
-- **Path display**: full repeater chain shown for incoming multi-hop messages
+Contact list sorted by most recently heard, with favorites shown first (marked with `*`). Filter by type using LEFT/RIGHT: All, Contacts, or Repeaters.
+
+Each contact shows hash prefix (`<XX>`), name, type suffix (`[D]`irect, `[N]` hops, `[R:D]` repeater direct, `[R:N]` repeater hops, `[Rm]` room, `[S]` sensor), and last-heard age.
+
+**Contact Actions** (ENTER on a contact):
+- **Chat nodes**: Send DM, Find Path, Telemetry, Send GPS, Request Location, Navigate
+- **Repeaters/Sensors**: Find Path, Telemetry, Status, Navigate (if GPS available)
+- Cached info displayed below actions: last heard, path/signal, battery, temperature, uptime
+
+All async operations (path discovery, telemetry, status, location requests) show a waiting state with timeout.
+
+### Nearby
+
+Active discovery of nearby repeaters and sensors. Press ENTER to scan; results appear within 8 seconds. Shows discovered nodes with hash prefix, name (or `<XX> ???` if unknown), and SNR.
+
+ENTER on a result opens the action menu (same as Contacts) if the node is in the contact database. Press ENTER again to rescan at any time.
+
+### Radio
+
+Displays current radio configuration: frequency, spreading factor, bandwidth, coding rate, TX power, and noise floor.
+
+### Packets
+
+Raw packet log showing packet type, first hop, RSSI, SNR, and age. Press ENTER for detail view with full type name, route type, signal info, path chain, and payload size. UP/DOWN to scroll through packets and detail items.
+
+### Advert
+
+Press ENTER to broadcast a mesh advertisement.
+
+### GPS
+
+GPS status display: on/off state, fix status, satellite count, position, and altitude. Press ENTER to toggle GPS on/off.
 
 ### Navigation
-- **Navigation page** with full compass rose, heading arrow, and 16-point cardinal direction
-- **Speed and max speed** displayed in mph (current/max format)
-- **Altitude** in feet, satellite count, and lat/lon coordinates
-- **Odometer** tracking distance in miles (resettable with DOWN key) — currently broken and should not be trusted
-- **GPS speed HUD** on home screen showing speed + 8-point heading when moving (e.g. `25NE`), toggled from GPS page
-- **Screen lock** (UP key on NAV page) to keep display on and prevent accidental input
-- **Trip reset** (DOWN key on NAV page) to zero out max speed and odometer
 
-### Home Screen
-- **Battery voltage toggle**: UP/DOWN on home page switches between numeric voltage (`4.15V`) and battery icon with fill percentage (3.0V–4.2V range)
-- **Speed HUD**: when enabled, shows current speed and heading direction in the top bar
-- **SNR display**: last received packet SNR shown in top bar (takes priority over speed HUD)
+Full-screen compass rose with heading arrow and 16-point cardinal direction. Displays speed/max speed (mph), altitude (feet), satellite count, and odometer.
 
-### Other
-- **Channel selector** for multi-channel messaging
-- **Contact selector** for direct messaging (DMs)
-- **GPS DM** feature to send location coordinates to specific contacts
-- **Runtime preset configuration** via `/presets.txt` file
-- **Companion app sync** — bidirectional sync with the companion app (see details below)
-- Custom splash screen branding
+**Waypoint navigation**: When a waypoint is set (from a contact location request or the Navigate action), shows target name, distance, bearing arrow, and ETA based on velocity made good.
+
+- UP: Toggle screen lock (keeps display on)
+- DOWN: Clear waypoint / reset trip (max speed and odometer)
+
+### Sensors
+
+Live sensor data display (battery voltage, temperature, humidity, pressure, altitude, etc.) from connected sensors.
+
+### Settings
+
+Toggle options: battery voltage display, SNR/RSSI bar, speed HUD, Bluetooth, and GPS.
+
+### Shutdown
+
+Hibernate the device.
+
+## Top Bar
+
+Always-visible top bar shows node name and battery indicator. Optional overlays:
+- **Battery voltage**: numeric voltage (`4.15V`) instead of battery icon
+- **Speed HUD**: current speed and heading direction when GPS is on and moving
+- **SNR display**: last received packet ID, RSSI, SNR, and age
+
+## Companion App Sync
+
+This firmware is compatible with the official MeshCore companion apps (iOS/Android). The device UI and companion app share a single radio:
+
+- Channel messages sent from the app appear in the device message log (with repeat tracking)
+- DMs sent from the app appear in the device message log (retries collapse with updated TX count)
+- All received messages appear on both simultaneously
+- Channel messages sent from the device are queued to the app's offline queue
+- DMs sent from the device do **not** sync to the app (no outgoing flag in the protocol)
 
 ## Building
 
@@ -68,36 +117,23 @@ Requires [PlatformIO](https://platformio.org/):
 pio run -e WioTrackerL1_companion_radio_ble
 ```
 
-Flash output located at: `.pio/build/WioTrackerL1_companion_radio_ble/firmware.zip`
+Flash output: `.pio/build/WioTrackerL1_companion_radio_ble/firmware.zip`
 
 ## Hardware
 
-- **Target Device**: Seeed Studio Wio Tracker L1 Pro (nRF52840 + SX1262)
-- **Display**: 64x128 OLED
-- **Input**: Joystick navigation
+- **Device**: Seeed Studio Wio Tracker L1 Pro (nRF52840 + SX1262)
+- **Display**: 128x64 OLED
+- **Input**: 5-way joystick (UP/DOWN/LEFT/RIGHT/ENTER) + CANCEL button
 
 ## Project Structure
 
-- `examples/companion_radio/ui-new/` — Enhanced UI implementation
-- `examples/companion_radio/MyMesh.cpp` — Mesh networking + companion app sync
-- `examples/companion_radio/AbstractUITask.h` — UI interface definition
+- `examples/companion_radio/ui-new/` -- Enhanced UI implementation
+- `examples/companion_radio/MyMesh.cpp` -- Mesh networking + companion app sync
+- `examples/companion_radio/AbstractUITask.h` -- UI callback interface
 
 ## Configuration
 
 Create `/presets.txt` on the device's internal filesystem (one message per line) to customize quick message presets.
-
-## Companion App Sync
-
-This firmware is compatible with the official MeshCore companion apps (iOS/Android). The device UI and companion app share a single radio, so messages flow between them:
-
-**App → Device UI:**
-- Channel messages sent from the app appear in the device's message log (with repeat tracking)
-- DMs sent from the app appear in the device's message log (retries collapse into a single entry with updated TX count)
-- All received messages (channel and DM) appear on both simultaneously
-
-**Device UI → App:**
-- Channel messages sent from the device are queued to the app's offline queue, so the app sees them too
-- DMs sent from the device do **not** sync to the app — the protocol has no "outgoing" flag, so sent DMs would incorrectly appear as incoming in the companion app
 
 ## License
 

@@ -437,6 +437,18 @@ int MyMesh::sendStatusReq(const ContactInfo& contact, uint32_t& est_timeout) {
   return result;
 }
 
+void MyMesh::startDiscoveryScan(uint32_t tag) {
+  ui_discover_tag = tag;
+  uint8_t data[6];
+  data[0] = 0x80;  // CTL_TYPE_NODE_DISCOVER_REQ
+  data[1] = (1 << ADV_TYPE_REPEATER) | (1 << ADV_TYPE_SENSOR);  // filter
+  memcpy(&data[2], &tag, 4);
+  auto pkt = createControlData(data, sizeof(data));
+  if (pkt) {
+    sendZeroHop(pkt);
+  }
+}
+
 int MyMesh::sendTelemetryReq(const ContactInfo& contact, uint32_t& est_timeout) {
   uint32_t tag;
   int result = sendRequest(contact, REQ_TYPE_GET_TELEMETRY_DATA, tag, est_timeout);
@@ -477,7 +489,7 @@ ContactInfo*  MyMesh::processAck(const uint8_t *data) {
       _serial->writeFrame(out_frame, 9);
 
       // NOTE: the same ACK can be received multiple times!
-      if (_ui) _ui->onAckReceived(expected_ack_table[i].ack);
+      if (_ui) _ui->onAckReceived(expected_ack_table[i].ack, (int16_t)_radio->getLastRSSI(), (int8_t)(_radio->getLastSNR() * 4));
       expected_ack_table[i].ack = 0; // clear expected hash, now that we have received ACK
       return expected_ack_table[i].contact;
     }
@@ -887,6 +899,21 @@ void MyMesh::onControlDataRecv(mesh::Packet *packet) {
     MESH_DEBUG_PRINTLN("onControlDataRecv(), payload_len too long: %d", packet->payload_len);
     return;
   }
+
+  // Intercept NODE_DISCOVER_RESP for UI
+  if (_ui && packet->payload_len >= 6 && (packet->payload[0] & 0xF0) == 0x90) {
+    uint32_t resp_tag;
+    memcpy(&resp_tag, &packet->payload[2], 4);
+    if (resp_tag == ui_discover_tag && ui_discover_tag != 0) {
+      uint8_t node_type = packet->payload[0] & 0x0F;
+      int8_t snr_x4 = packet->payload[1];
+      int16_t rssi = (int16_t)_radio->getLastRSSI();
+      const uint8_t* pub_key = &packet->payload[6];
+      uint8_t pub_key_len = packet->payload_len - 6;
+      _ui->onDiscoverResponse(node_type, snr_x4, rssi, packet->path_len, pub_key, pub_key_len);
+    }
+  }
+
   int i = 0;
   out_frame[i++] = PUSH_CODE_CONTROL_DATA;
   out_frame[i++] = (int8_t)(_radio->getLastSNR() * 4);

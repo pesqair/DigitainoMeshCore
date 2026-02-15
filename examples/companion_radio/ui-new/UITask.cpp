@@ -189,6 +189,7 @@ class HomeScreen : public UIScreen {
     PRESETS,
     RECENT,
     TRACE,
+    NEARBY,
     RADIO,
     PACKETS,
     ADVERT,
@@ -330,6 +331,29 @@ class HomeScreen : public UIScreen {
   unsigned long _ct_gps_timeout;
   bool _ct_gps_done;     // location received
   bool _ct_gps_no_fix;   // responded but no GPS
+
+  // Nearby scan state
+  struct ScanResult {
+    bool valid;
+    uint8_t pub_key[PUB_KEY_SIZE];
+    uint8_t node_type;
+    int8_t snr_x4;
+    int16_t rssi;
+    uint8_t path_len;
+    char name[32];
+    bool in_contacts;
+  };
+  #define SCAN_RESULT_SIZE 16
+  ScanResult _scan_results[SCAN_RESULT_SIZE];
+  int _scan_count;
+  bool _scan_active;
+  unsigned long _scan_timeout;
+  uint32_t _scan_tag;
+  uint8_t _scan_sel;
+  bool _scan_action;
+  uint8_t _scan_action_sel;
+  uint8_t _scan_action_count;
+  uint8_t _scan_detail_scroll;
 
   // Build message filter options by scanning message log for unique channel_idx values
   void rebuildMsgFilters() {
@@ -527,13 +551,15 @@ public:
        _ct_telem_pending(false), _ct_telem_done(false),
        _ct_status_pending(false), _ct_status_done(false),
        _ct_gps_pending(false), _ct_gps_done(false), _ct_gps_no_fix(false),
-       sensors_lpp(200) { memset(_ct_cache, 0, sizeof(_ct_cache)); }
+       _scan_count(0), _scan_active(false), _scan_timeout(0), _scan_tag(0),
+       _scan_sel(0), _scan_action(false), _scan_action_sel(0), _scan_action_count(0), _scan_detail_scroll(0),
+       sensors_lpp(200) { memset(_ct_cache, 0, sizeof(_ct_cache)); memset(_scan_results, 0, sizeof(_scan_results)); }
 
   bool isUserBusy() const {
     return _page_active || _msg_detail || _pkt_detail || _ct_action || _ct_path_pending || _ct_telem_pending ||
            _ct_telem_done || _ct_status_pending || _ct_status_done ||
            _ct_gps_pending || _ct_gps_done || _ct_gps_no_fix ||
-           _preset_target_choosing || _preset_edit_mode;
+           _preset_target_choosing || _preset_edit_mode || _scan_action;
   }
 
   void poll() override {
@@ -627,6 +653,10 @@ public:
         case TRACE: page_title = "Contacts";
           snprintf(summary_buf, sizeof(summary_buf), "%d contacts", the_mesh.getNumContacts());
           page_summary = summary_buf; break;
+        case NEARBY: page_title = "Nearby";
+          if (_scan_count > 0) { snprintf(summary_buf, sizeof(summary_buf), "%d found", _scan_count); page_summary = summary_buf; }
+          else page_summary = "Scan nearby";
+          break;
         case RADIO: page_title = "Radio";
           snprintf(summary_buf, sizeof(summary_buf), "%.3f SF%d", _node_prefs->freq, _node_prefs->sf);
           page_summary = summary_buf; break;
@@ -919,12 +949,12 @@ public:
           if (entry.delivered || entry.expected_ack != 0) detail_count++;
         }
 
-        // Received messages: Signal (RSSI/SNR)
-        if (!entry.is_sent && entry.rssi != 0) {
+        // Signal (RSSI/SNR) for received messages and delivered sent DMs
+        if (entry.rssi != 0 && (!entry.is_sent || entry.delivered)) {
           signal_detail_idx = detail_count;
           float snr = (float)entry.snr_x4 / 4.0f;
           snprintf(detail_items[detail_count], sizeof(detail_items[0]),
-                   "Signal: %d/%.1f", entry.rssi, snr);
+                   "%s %d/%.1f", entry.is_sent ? "ACK Signal:" : "Signal:", entry.rssi, snr);
           detail_count++;
         }
 
@@ -1664,6 +1694,246 @@ public:
           }
         }
       }
+    } else if (_page == HomePage::NEARBY) {
+      display.setTextSize(1);
+      // Reuse the same pending sub-state rendering as contacts page
+      if (_ct_path_pending || _ct_path_found ||
+          _ct_telem_pending || _ct_telem_done ||
+          _ct_status_pending || _ct_status_done ||
+          _ct_gps_pending || _ct_gps_done || _ct_gps_no_fix) {
+        // Render pending sub-states (same as contacts page)
+        if (_ct_gps_pending || _ct_gps_done || _ct_gps_no_fix) {
+          display.setColor(DisplayDriver::YELLOW);
+          snprintf(tmp, sizeof(tmp), "Location: %s", _ct_target_name);
+          display.drawTextEllipsized(0, TOP_BAR_H + 6, display.width(), tmp);
+          if (_ct_gps_done) {
+            ContactCache* cc = findCache(_ct_path_key);
+            display.setColor(DisplayDriver::LIGHT);
+            if (cc && cc->has_gps) {
+              snprintf(tmp, sizeof(tmp), "%.5f, %.5f", cc->gps_lat, cc->gps_lon);
+              display.setCursor(0, TOP_BAR_H + 18);
+              display.print(tmp);
+              display.setColor(DisplayDriver::GREEN);
+              display.drawTextCentered(display.width() / 2, TOP_BAR_H + 34, "ENTER to navigate");
+            } else {
+              display.setCursor(0, TOP_BAR_H + 22);
+              display.print("No GPS data");
+            }
+          } else if (_ct_gps_no_fix) {
+            display.setColor(DisplayDriver::LIGHT);
+            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "No GPS fix");
+          } else {
+            display.setColor(DisplayDriver::LIGHT);
+            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Requesting...");
+            if (millis() > _ct_gps_timeout) { _ct_gps_pending = false; _task->showAlert("Location timeout", 1200); }
+          }
+        } else if (_ct_status_pending || _ct_status_done) {
+          display.setColor(DisplayDriver::YELLOW);
+          snprintf(tmp, sizeof(tmp), "Status: %s", _ct_target_name);
+          display.drawTextEllipsized(0, TOP_BAR_H + 6, display.width(), tmp);
+          if (_ct_status_done) {
+            ContactCache* cc = findCache(_ct_path_key);
+            display.setColor(DisplayDriver::LIGHT);
+            if (cc && cc->has_status) {
+              uint32_t up = cc->uptime_secs;
+              uint32_t d = up / 86400; uint32_t h = (up % 86400) / 3600; uint32_t m = (up % 3600) / 60;
+              if (d > 0) snprintf(tmp, sizeof(tmp), "Up: %lud %luh %lum", d, h, m);
+              else snprintf(tmp, sizeof(tmp), "Up: %luh %lum", h, m);
+              display.setCursor(0, TOP_BAR_H + 18); display.print(tmp);
+              snprintf(tmp, sizeof(tmp), "Power: %umV", cc->batt_mv);
+              display.setCursor(0, TOP_BAR_H + 30); display.print(tmp);
+            } else { display.setCursor(0, TOP_BAR_H + 22); display.print("No data"); }
+          } else {
+            display.setColor(DisplayDriver::LIGHT);
+            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Waiting...");
+            if (millis() > _ct_status_timeout) { _ct_status_pending = false; _task->showAlert("Status timeout", 1200); }
+          }
+        } else if (_ct_telem_pending || _ct_telem_done) {
+          display.setColor(DisplayDriver::YELLOW);
+          snprintf(tmp, sizeof(tmp), "Telemetry: %s", _ct_target_name);
+          display.drawTextEllipsized(0, TOP_BAR_H + 6, display.width(), tmp);
+          if (_ct_telem_done) {
+            ContactCache* cc = findCache(_ct_path_key);
+            display.setColor(DisplayDriver::LIGHT);
+            if (cc && cc->has_telem) {
+              snprintf(tmp, sizeof(tmp), "Batt: %.2fV", cc->voltage);
+              display.setCursor(0, TOP_BAR_H + 18); display.print(tmp);
+              if (cc->temperature > -274) {
+                snprintf(tmp, sizeof(tmp), "Temp: %.1fC", cc->temperature);
+                display.setCursor(0, TOP_BAR_H + 30); display.print(tmp);
+              }
+            } else { display.setCursor(0, TOP_BAR_H + 22); display.print("No data"); }
+          } else {
+            display.setColor(DisplayDriver::LIGHT);
+            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Waiting...");
+            if (millis() > _ct_telem_timeout) { _ct_telem_pending = false; _task->showAlert("Telem timeout", 1200); }
+          }
+        } else if (_ct_path_pending) {
+          display.setColor(DisplayDriver::YELLOW);
+          snprintf(tmp, sizeof(tmp), "Finding: %s", _ct_target_name);
+          display.drawTextEllipsized(0, TOP_BAR_H + 6, display.width(), tmp);
+          if (_ct_path_found) {
+            ContactCache* cc = findCache(_ct_path_key);
+            if (cc && cc->has_path_info) {
+              if (cc->path_hops > 0) {
+                snprintf(tmp, sizeof(tmp), "Found! %d hops", cc->path_hops);
+                display.setColor(DisplayDriver::YELLOW);
+                display.drawTextEllipsized(0, TOP_BAR_H + 18, display.width(), tmp);
+              } else {
+                display.setColor(DisplayDriver::YELLOW);
+                display.drawTextEllipsized(0, TOP_BAR_H + 18, display.width(), "Found! Direct");
+              }
+              float snr_f = (float)cc->snr_x4 / 4.0f;
+              snprintf(tmp, sizeof(tmp), "RSSI:%d SNR:%.1f", cc->rssi, snr_f);
+              display.setColor(DisplayDriver::LIGHT);
+              display.drawTextEllipsized(0, TOP_BAR_H + 30, display.width(), tmp);
+            } else {
+              display.setColor(DisplayDriver::YELLOW);
+              display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Path updated!");
+            }
+          } else {
+            display.setColor(DisplayDriver::LIGHT);
+            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Searching...");
+            if (millis() > _ct_path_timeout) { _ct_path_pending = false; _task->showAlert("No path found", 1200); }
+          }
+        }
+      } else if (_scan_action) {
+        // Action menu for selected scan result
+        ScanResult& sr = _scan_results[_scan_sel];
+        display.setColor(DisplayDriver::YELLOW);
+        char sr_hdr[48];
+        snprintf(sr_hdr, sizeof(sr_hdr), "<%02X> %s", sr.pub_key[0], sr.name);
+        display.drawTextEllipsized(0, TOP_BAR_H, display.width(), sr_hdr);
+
+        const char* items[12];
+        bool item_is_action[12];
+        int item_count = 0;
+
+        if (sr.in_contacts) {
+          items[item_count] = "Find Path"; item_is_action[item_count++] = true;
+          items[item_count] = "Telemetry"; item_is_action[item_count++] = true;
+          if (sr.node_type == ADV_TYPE_REPEATER) {
+            items[item_count] = "Status"; item_is_action[item_count++] = true;
+          }
+#if ENV_INCLUDE_GPS == 1
+          {
+            ContactInfo ci;
+            if (getContactByKey(sr.pub_key, ci)) {
+              ContactCache* ncc = findCache(ci.id.pub_key);
+              bool has_gps = (ci.gps_lat != 0 || ci.gps_lon != 0) || (ncc && ncc->has_gps);
+              if (has_gps) {
+                items[item_count] = "Navigate"; item_is_action[item_count++] = true;
+              }
+            }
+          }
+#endif
+        }
+        _scan_action_count = item_count;
+
+        // Info lines (always shown)
+        static char scan_info[4][40];
+        float snr_f = (float)sr.snr_x4 / 4.0f;
+        snprintf(scan_info[0], sizeof(scan_info[0]), "SNR: %.1f dB", snr_f);
+        items[item_count] = scan_info[0]; item_is_action[item_count++] = false;
+        snprintf(scan_info[1], sizeof(scan_info[1]), "RSSI: %d dBm", sr.rssi);
+        items[item_count] = scan_info[1]; item_is_action[item_count++] = false;
+        snprintf(scan_info[2], sizeof(scan_info[2]), "Hops: %d", sr.path_len);
+        items[item_count] = scan_info[2]; item_is_action[item_count++] = false;
+        snprintf(scan_info[3], sizeof(scan_info[3]), "Type: %s", sr.node_type == ADV_TYPE_REPEATER ? "Repeater" : "Sensor");
+        items[item_count] = scan_info[3]; item_is_action[item_count++] = false;
+
+        // Cached info from contacts
+        if (sr.in_contacts) {
+          ContactCache* cc = findCache(sr.pub_key);
+          static char scan_cache_info[4][40];
+          if (cc && cc->has_path_info) {
+            snprintf(scan_cache_info[0], sizeof(scan_cache_info[0]), "Path RSSI:%d SNR:%.1f", cc->rssi, (float)cc->snr_x4 / 4.0f);
+            items[item_count] = scan_cache_info[0]; item_is_action[item_count++] = false;
+          }
+          if (cc && cc->has_telem) {
+            snprintf(scan_cache_info[1], sizeof(scan_cache_info[1]), "Batt: %.2fV", cc->voltage);
+            items[item_count] = scan_cache_info[1]; item_is_action[item_count++] = false;
+          }
+          if (cc && cc->has_status) {
+            uint32_t up = cc->uptime_secs;
+            uint32_t d = up / 86400; uint32_t h = (up % 86400) / 3600; uint32_t m = (up % 3600) / 60;
+            if (d > 0)
+              snprintf(scan_cache_info[2], sizeof(scan_cache_info[2]), "Up: %lud %luh %lum", d, h, m);
+            else
+              snprintf(scan_cache_info[2], sizeof(scan_cache_info[2]), "Up: %luh %lum", h, m);
+            items[item_count] = scan_cache_info[2]; item_is_action[item_count++] = false;
+          }
+        }
+
+        if (_scan_action_sel >= _scan_action_count && _scan_action_count > 0)
+          _scan_action_sel = _scan_action_count - 1;
+        if (_scan_detail_scroll > item_count - 1 && item_count > 0)
+          _scan_detail_scroll = item_count - 1;
+
+        int visible = 4;
+        int y = TOP_BAR_H + 11;
+        for (int i = _scan_detail_scroll; i < _scan_detail_scroll + visible && i < item_count; i++, y += 11) {
+          if (item_is_action[i] && i == _scan_action_sel) {
+            display.setColor(DisplayDriver::YELLOW);
+            display.setCursor(0, y);
+            display.print(">");
+          }
+          display.setColor(item_is_action[i] && i == _scan_action_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+          display.drawTextEllipsized(8, y, display.width() - 8, items[i]);
+        }
+      } else {
+        // Scan result list
+        display.setColor(DisplayDriver::YELLOW);
+        snprintf(tmp, sizeof(tmp), "-- Nearby (%d) --", _scan_count);
+        display.drawTextCentered(display.width() / 2, TOP_BAR_H, tmp);
+
+        if (_scan_count == 0) {
+          display.setColor(DisplayDriver::LIGHT);
+          if (_scan_active) {
+            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "Scanning...");
+            if (millis() > _scan_timeout) {
+              _scan_active = false;
+              _scan_tag = 0;
+            }
+          } else if (_scan_tag != 0) {
+            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "No results");
+          } else {
+            display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "ENTER to scan");
+          }
+        } else {
+          // Check scan timeout
+          if (_scan_active && millis() > _scan_timeout) {
+            _scan_active = false;
+          }
+
+          int visible = 4;
+          int scroll_top = 0;
+          if (_scan_sel >= visible) scroll_top = _scan_sel - visible + 1;
+          if (scroll_top > _scan_count - visible) scroll_top = _scan_count - visible;
+          if (scroll_top < 0) scroll_top = 0;
+
+          int y = TOP_BAR_H + 11;
+          for (int v = scroll_top; v < scroll_top + visible && v < _scan_count; v++, y += 11) {
+            ScanResult& sr = _scan_results[v];
+            if (v == _scan_sel) {
+              display.setColor(DisplayDriver::YELLOW);
+              display.setCursor(0, y);
+              display.print(">");
+            }
+            display.setColor(v == _scan_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+            char line[48];
+            float snr_f = (float)sr.snr_x4 / 4.0f;
+            snprintf(line, sizeof(line), "<%02X> %s %.1f", sr.pub_key[0], sr.name, snr_f);
+            display.drawTextEllipsized(8, y, display.width() - 8, line);
+          }
+
+          if (_scan_active) {
+            display.setColor(DisplayDriver::LIGHT);
+            display.setCursor(display.width() - 18, TOP_BAR_H);
+            display.print("...");
+          }
+        }
+      }
     } else if (_page == HomePage::RADIO) {
       display.setColor(DisplayDriver::YELLOW);
       display.setTextSize(1);
@@ -1776,13 +2046,13 @@ public:
         }
 
         // Clamp scroll
-        int detail_visible = 5;
+        int detail_visible = 4;
         int max_scroll = (detail_count > detail_visible) ? detail_count - detail_visible : 0;
         if (_pkt_detail_scroll > max_scroll) _pkt_detail_scroll = max_scroll;
 
         // Render detail rows
-        int y = TOP_BAR_H + 10;
-        for (int i = _pkt_detail_scroll; i < _pkt_detail_scroll + detail_visible && i < detail_count; i++, y += 10) {
+        int y = TOP_BAR_H + 11;
+        for (int i = _pkt_detail_scroll; i < _pkt_detail_scroll + detail_visible && i < detail_count; i++, y += 11) {
           display.setColor(DisplayDriver::LIGHT);
           display.setCursor(0, y);
           display.print(detail_items[i]);
@@ -1803,12 +2073,12 @@ public:
           display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "No packets yet");
         } else {
           if (_pkt_sel >= total) _pkt_sel = total - 1;
-          // Show 5 visible entries, scrolled so selection is visible
-          int visible = 5;
+          // Show 4 visible entries, scrolled so selection is visible
+          int visible = 4;
           int scroll = 0;
           if (_pkt_sel >= visible) scroll = _pkt_sel - visible + 1;
-          int y = TOP_BAR_H + 10;
-          for (int vi = 0; vi < visible && (scroll + vi) < total; vi++, y += 10) {
+          int y = TOP_BAR_H + 11;
+          for (int vi = 0; vi < visible && (scroll + vi) < total; vi++, y += 11) {
             int item = scroll + vi;
             int idx = (_task->_pkt_log_next - 1 - item + PACKET_LOG_SIZE) % PACKET_LOG_SIZE;
             auto& pkt = _task->_pkt_log[idx];
@@ -2529,6 +2799,236 @@ public:
           }
           return true;
         }
+      }
+      return false;
+    }
+    if (_page == HomePage::NEARBY) {
+      if (_scan_action) {
+        if (c == KEY_CANCEL) {
+          _scan_action = false;
+          _scan_detail_scroll = 0;
+          return true;
+        }
+        if (c == KEY_UP) {
+          if (_scan_action_sel > 0) {
+            _scan_action_sel--;
+            if (_scan_action_sel < _scan_detail_scroll) _scan_detail_scroll = _scan_action_sel;
+          } else if (_scan_detail_scroll > 0) {
+            _scan_detail_scroll--;
+          }
+          return true;
+        }
+        if (c == KEY_DOWN) {
+          if (_scan_action_sel < _scan_action_count - 1) {
+            _scan_action_sel++;
+            if (_scan_action_sel >= _scan_detail_scroll + 4) _scan_detail_scroll = _scan_action_sel - 3;
+          } else {
+            // Scroll into info lines
+            ScanResult& sr = _scan_results[_scan_sel];
+            int total = _scan_action_count + 4; // 4 info lines always present
+            if (sr.in_contacts) {
+              ContactCache* cc = findCache(sr.pub_key);
+              if (cc && cc->has_path_info) total += 1;
+              if (cc && cc->has_telem) total += 1;
+              if (cc && cc->has_status) total += 1;
+            }
+            if (_scan_detail_scroll + 4 < total) _scan_detail_scroll++;
+          }
+          return true;
+        }
+        if (c == KEY_ENTER && _scan_action_count > 0) {
+          ScanResult& sr = _scan_results[_scan_sel];
+          ContactInfo ci;
+          if (sr.in_contacts && getContactByKey(sr.pub_key, ci)) {
+            const char* actions[6];
+            uint8_t act_count = 0;
+            actions[act_count++] = "Find Path";
+            actions[act_count++] = "Telemetry";
+            if (sr.node_type == ADV_TYPE_REPEATER) {
+              actions[act_count++] = "Status";
+            }
+#if ENV_INCLUDE_GPS == 1
+            {
+              ContactCache* ncc = findCache(ci.id.pub_key);
+              bool has_gps = (ci.gps_lat != 0 || ci.gps_lon != 0) || (ncc && ncc->has_gps);
+              if (has_gps) {
+                actions[act_count++] = "Navigate";
+              }
+            }
+#endif
+            const char* chosen = actions[_scan_action_sel];
+            if (strcmp(chosen, "Find Path") == 0) {
+              uint32_t est_timeout;
+              int result = the_mesh.sendPathFind(ci, est_timeout);
+              if (result != MSG_SEND_FAILED) {
+                _scan_action = false;
+                _ct_path_pending = true;
+                _ct_path_found = false;
+                _ct_path_timeout = millis() + est_timeout + 2000;
+                strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
+                _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
+                memcpy(_ct_path_key, ci.id.pub_key, PUB_KEY_SIZE);
+              } else {
+                _task->showAlert("Send failed", 800);
+              }
+            } else if (strcmp(chosen, "Telemetry") == 0) {
+              uint32_t est_timeout;
+              int result = the_mesh.sendTelemetryReq(ci, est_timeout);
+              if (result != MSG_SEND_FAILED) {
+                _scan_action = false;
+                _ct_telem_pending = true;
+                _ct_telem_done = false;
+                _ct_telem_timeout = millis() + est_timeout + 2000;
+                strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
+                _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
+                memcpy(_ct_path_key, ci.id.pub_key, PUB_KEY_SIZE);
+              } else {
+                _task->showAlert("Send failed", 800);
+              }
+            } else if (strcmp(chosen, "Status") == 0) {
+              uint32_t est_timeout;
+              int result = the_mesh.sendStatusReq(ci, est_timeout);
+              if (result != MSG_SEND_FAILED) {
+                _scan_action = false;
+                _ct_status_pending = true;
+                _ct_status_done = false;
+                _ct_status_timeout = millis() + est_timeout + 2000;
+                strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
+                _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
+                memcpy(_ct_path_key, ci.id.pub_key, PUB_KEY_SIZE);
+              } else {
+                _task->showAlert("Send failed", 800);
+              }
+#if ENV_INCLUDE_GPS == 1
+            } else if (strcmp(chosen, "Navigate") == 0) {
+              ContactCache* ncc = findCache(ci.id.pub_key);
+              bool has_cached_gps = (ncc && ncc->has_gps);
+              if (has_cached_gps) {
+                _nav_wp_lat = ncc->gps_lat;
+                _nav_wp_lon = ncc->gps_lon;
+              } else {
+                _nav_wp_lat = ci.gps_lat / 1000000.0f;
+                _nav_wp_lon = ci.gps_lon / 1000000.0f;
+              }
+              strncpy(_nav_wp_name, ci.name, sizeof(_nav_wp_name) - 1);
+              _nav_wp_name[sizeof(_nav_wp_name) - 1] = '\0';
+              _nav_has_waypoint = true;
+              _scan_action = false;
+              _page = HomePage::NAV;
+#endif
+            }
+          }
+          return true;
+        }
+        return true;
+      }
+      // Handle pending sub-states (path/telem/status results)
+      if (_ct_gps_pending || _ct_gps_done || _ct_gps_no_fix) {
+        if (c == KEY_CANCEL) {
+          _ct_gps_pending = false; _ct_gps_done = false; _ct_gps_no_fix = false;
+          _scan_action = true; _scan_action_sel = 0; _scan_detail_scroll = 0;
+          return true;
+        }
+#if ENV_INCLUDE_GPS == 1
+        if (c == KEY_ENTER && _ct_gps_done) {
+          ContactCache* cc = findCache(_ct_path_key);
+          if (cc && cc->has_gps) {
+            _nav_wp_lat = cc->gps_lat; _nav_wp_lon = cc->gps_lon;
+            strncpy(_nav_wp_name, _ct_target_name, sizeof(_nav_wp_name) - 1);
+            _nav_wp_name[sizeof(_nav_wp_name) - 1] = '\0';
+            _nav_has_waypoint = true;
+            _ct_gps_pending = false; _ct_gps_done = false; _ct_gps_no_fix = false;
+            _page = HomePage::NAV;
+          }
+          return true;
+        }
+#endif
+        return true;
+      }
+      if (_ct_status_pending || _ct_status_done) {
+        if (c == KEY_CANCEL || c == KEY_ENTER) {
+          _ct_status_pending = false; _ct_status_done = false;
+          _scan_action = true; _scan_action_sel = 0; _scan_detail_scroll = 0;
+          return true;
+        }
+        return true;
+      }
+      if (_ct_telem_pending || _ct_telem_done) {
+        if (c == KEY_CANCEL || c == KEY_ENTER) {
+          _ct_telem_pending = false; _ct_telem_done = false;
+          _scan_action = true; _scan_action_sel = 0; _scan_detail_scroll = 0;
+          return true;
+        }
+        return true;
+      }
+      if (_ct_path_pending) {
+        if (c == KEY_CANCEL || c == KEY_ENTER) {
+          _ct_path_pending = false; _ct_path_found = false;
+          _scan_action = true; _scan_action_sel = 0; _scan_detail_scroll = 0;
+          return true;
+        }
+        return true;
+      }
+      // Result list
+      if (c == KEY_CANCEL) {
+        _page_active = false;
+        return true;
+      }
+      if (c == KEY_ENTER) {
+        if (_scan_count == 0 && !_scan_active) {
+          // Initiate scan
+          _scan_tag = random(1, 0x7FFFFFFF);
+          the_mesh.startDiscoveryScan(_scan_tag);
+          _scan_active = true;
+          _scan_timeout = millis() + 8000;
+          _scan_count = 0;
+          memset(_scan_results, 0, sizeof(_scan_results));
+          _scan_sel = 0;
+          return true;
+        }
+        if (_scan_count > 0 && !_scan_active) {
+          // If scan done: ENTER on result opens action or rescans
+          ScanResult& sr = _scan_results[_scan_sel];
+          if (sr.valid) {
+            if (sr.in_contacts) {
+              _scan_action = true;
+              _scan_action_sel = 0;
+              _scan_detail_scroll = 0;
+            } else {
+              _task->showAlert("Not in contacts", 1000);
+            }
+            return true;
+          }
+          // If at end of list with no selection, rescan
+          _scan_tag = random(1, 0x7FFFFFFF);
+          the_mesh.startDiscoveryScan(_scan_tag);
+          _scan_active = true;
+          _scan_timeout = millis() + 8000;
+          _scan_count = 0;
+          memset(_scan_results, 0, sizeof(_scan_results));
+          _scan_sel = 0;
+          return true;
+        }
+        if (_scan_active) {
+          // Rescan while scanning
+          _scan_tag = random(1, 0x7FFFFFFF);
+          the_mesh.startDiscoveryScan(_scan_tag);
+          _scan_active = true;
+          _scan_timeout = millis() + 8000;
+          _scan_count = 0;
+          memset(_scan_results, 0, sizeof(_scan_results));
+          _scan_sel = 0;
+          return true;
+        }
+        return true;
+      }
+      if (c == KEY_UP && _scan_count > 0) {
+        if (_scan_sel > 0) _scan_sel--;
+        return true;
+      }
+      if (c == KEY_DOWN && _scan_count > 0) {
+        if (_scan_sel < _scan_count - 1) _scan_sel++;
+        return true;
       }
       return false;
     }
@@ -4000,7 +4500,7 @@ void UITask::updateMsgLogRetry(const char* text, const char* contact_name, const
   addToMsgLog("You", text, true, 0, -1, contact_name, NULL, packet_hash, expected_ack);
 }
 
-void UITask::onAckReceived(uint32_t ack_hash) {
+void UITask::onAckReceived(uint32_t ack_hash, int16_t rssi, int8_t snr_x4) {
   if (ack_hash == 0) return;
   for (int i = 0; i < _msg_log_count; i++) {
     int idx = (_msg_log_next - 1 - i + MSG_LOG_SIZE) % MSG_LOG_SIZE;
@@ -4009,6 +4509,10 @@ void UITask::onAckReceived(uint32_t ack_hash) {
     if (entry.channel_idx >= 0) continue;
     if (entry.expected_ack == ack_hash) {
       entry.delivered = true;
+      if (rssi != 0) {
+        entry.rssi = rssi;
+        entry.snr_x4 = snr_x4;
+      }
       return;
     }
   }
@@ -4126,6 +4630,47 @@ void UITask::onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, 
   if (!hs->_ct_status_pending) return;
   hs->_ct_status_done = true;
   hs->_ct_status_pending = false;
+}
+
+void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, uint8_t path_len, const uint8_t* pub_key, uint8_t pub_key_len) {
+  if (!home) return;
+  HomeScreen* hs = (HomeScreen*)home;
+
+  if (!hs->_scan_active) return;
+
+  // Check for duplicate by pub_key prefix (4 bytes)
+  for (int i = 0; i < hs->_scan_count; i++) {
+    if (hs->_scan_results[i].valid && pub_key_len >= 4 &&
+        memcmp(hs->_scan_results[i].pub_key, pub_key, 4) == 0) {
+      return;  // duplicate
+    }
+  }
+
+  // Find empty slot
+  if (hs->_scan_count >= SCAN_RESULT_SIZE) return;
+
+  HomeScreen::ScanResult& sr = hs->_scan_results[hs->_scan_count];
+  memset(&sr, 0, sizeof(sr));
+  sr.valid = true;
+  sr.node_type = node_type;
+  sr.snr_x4 = snr_x4;
+  sr.rssi = rssi;
+  sr.path_len = path_len;
+  int copy_len = pub_key_len < PUB_KEY_SIZE ? pub_key_len : PUB_KEY_SIZE;
+  memcpy(sr.pub_key, pub_key, copy_len);
+
+  // Try to look up contact
+  ContactInfo* ci = the_mesh.lookupContactByPubKey(pub_key, copy_len);
+  if (ci) {
+    strncpy(sr.name, ci->name, sizeof(sr.name) - 1);
+    sr.name[sizeof(sr.name) - 1] = '\0';
+    sr.in_contacts = true;
+  } else {
+    snprintf(sr.name, sizeof(sr.name), "<%02X> ???", pub_key[0]);
+    sr.in_contacts = false;
+  }
+
+  hs->_scan_count++;
 }
 
 /*

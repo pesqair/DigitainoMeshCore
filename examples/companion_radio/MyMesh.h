@@ -104,6 +104,7 @@ public:
   int sendPathFind(ContactInfo& contact, uint32_t& est_timeout);
   int sendTelemetryReq(const ContactInfo& contact, uint32_t& est_timeout);
   int sendStatusReq(const ContactInfo& contact, uint32_t& est_timeout);
+  void startDiscoveryScan(uint32_t tag);
 
 protected:
   float getAirtimeBudgetFactor() const override;
@@ -156,7 +157,7 @@ protected:
   bool getChannelForSave(uint8_t channel_idx, ChannelDetails& ch) override { return getChannel(channel_idx, ch); }
 
   void clearPendingReqs() {
-    pending_login = pending_status = pending_telemetry = pending_discovery = pending_req = ui_pending_telemetry = ui_pending_status = 0;
+    pending_login = pending_status = pending_telemetry = pending_discovery = pending_req = ui_pending_telemetry = ui_pending_status = ui_discover_tag = 0;
   }
 
 public:
@@ -195,6 +196,7 @@ private:
   uint32_t pending_telemetry, pending_discovery;   // pending _TELEMETRY_REQ
   uint32_t ui_pending_telemetry;  // UI-initiated telemetry request
   uint32_t ui_pending_status;     // UI-initiated status request (pub_key prefix)
+  uint32_t ui_discover_tag;       // tag for UI-initiated discovery scan
   uint32_t pending_req;   // pending _BINARY_REQ
   BaseSerialInterface *_serial;
   AbstractUITask* _ui;

@@ -144,11 +144,12 @@ public:
   void sendPresetDM(const ContactInfo& contact);
   void addToMsgLog(const char* origin, const char* text, bool is_sent, uint8_t path_len = 0, int channel_idx = -1, const char* contact_name = NULL, const uint8_t* path = NULL, const uint8_t* packet_hash = NULL, uint32_t expected_ack = 0);
   void updateMsgLogRetry(const char* text, const char* contact_name, const uint8_t* packet_hash, uint32_t expected_ack) override;
-  void onAckReceived(uint32_t ack_hash) override;
+  void onAckReceived(uint32_t ack_hash, int16_t rssi = 0, int8_t snr_x4 = 0) override;
   void matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) override;
   void onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_x4) override;
   void onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature, float gps_lat = 0, float gps_lon = 0) override;
   void onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, uint16_t batt_mv) override;
+  void onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, uint8_t path_len, const uint8_t* pub_key, uint8_t pub_key_len) override;
   void showAlert(const char* text, int duration_millis);
   int  getMsgCount() const { return _msgcount; }
   bool hasDisplay() const { return _display != NULL; }
