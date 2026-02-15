@@ -681,12 +681,11 @@ class HomeScreen : public UIScreen {
       // RX bars with down-arrow (▼) on bar 0
       right_x -= bars_w;
       int bars_x = right_x;
-      // Draw down-arrow above bar 0 (3x5px at bars_x, bars_y)
+      // Draw down-arrow ▼ above bar 0 (5x3px at bars_x, bars_y)
       display.setColor(DisplayDriver::LIGHT);
-      display.fillRect(bars_x, bars_y, 3, 1);      // ███
-      display.fillRect(bars_x, bars_y + 1, 2, 1);  // ██.
-      display.fillRect(bars_x + 1, bars_y + 1, 1, 1); // overlap center
-      display.fillRect(bars_x + 1, bars_y + 2, 1, 1); // .█.
+      display.fillRect(bars_x, bars_y, 5, 1);        // █████
+      display.fillRect(bars_x + 1, bars_y + 1, 3, 1); // .███.
+      display.fillRect(bars_x + 2, bars_y + 2, 1, 1);  // ..█..
       // Draw bars on top
       for (int b = 0; b < 4; b++) {
         int bh = 3 + b * 2;
@@ -717,11 +716,11 @@ class HomeScreen : public UIScreen {
         // TX bars with up-arrow (▲) on bar 0
         right_x -= bars_w;
         bars_x = right_x;
-        // Draw up-arrow above bar 0 (3x3px at bars_x, bars_y)
+        // Draw up-arrow ▲ above bar 0 (5x3px at bars_x, bars_y)
         display.setColor(DisplayDriver::LIGHT);
-        display.fillRect(bars_x + 1, bars_y, 1, 1);     // .█.
-        display.fillRect(bars_x, bars_y + 1, 3, 1);      // ███
-        display.fillRect(bars_x + 1, bars_y + 2, 1, 1);  // .█.
+        display.fillRect(bars_x + 2, bars_y, 1, 1);        // ..█..
+        display.fillRect(bars_x + 1, bars_y + 1, 3, 1);    // .███.
+        display.fillRect(bars_x, bars_y + 2, 5, 1);         // █████
         // Draw bars on top
         for (int b = 0; b < 4; b++) {
           int bh = 3 + b * 2;
@@ -5716,6 +5715,10 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
       _tx_signal_time = millis();
       _tx_cycle_time = millis();
     }
+    // Also update RX signal with correct repeater ID (snr_back = how well we heard them)
+    _last_rx_id = _auto_ping_current_id;
+    _last_rx_snr_x4 = (int8_t)(snr_back * 4);
+    _last_rx_time = millis();
     _auto_ping_next++;
     _auto_ping_next_time = millis() + 1000;  // 1s delay before next
     return;
@@ -5730,12 +5733,18 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
   hs->_ct_ping_snr_back = snr_back;
 
   // Update TX signal with accurate snr_there
-  _tx_signals[0].id = hs->_ct_path_key[0];
+  uint8_t repeater_id = hs->_ct_path_key[0];
+  _tx_signals[0].id = repeater_id;
   _tx_signals[0].snr_x4 = (int8_t)(snr_there * 4);
   _tx_signal_count = 1;
   _tx_signal_time = millis();
   _tx_signal_cycle = 0;
   _tx_cycle_time = millis();
+
+  // Update RX signal with correct repeater ID (snr_back = how well we heard them)
+  _last_rx_id = repeater_id;
+  _last_rx_snr_x4 = (int8_t)(snr_back * 4);
+  _last_rx_time = millis();
 }
 
 void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, uint8_t path_len, const uint8_t* pub_key, uint8_t pub_key_len) {
