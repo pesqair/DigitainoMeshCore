@@ -107,9 +107,9 @@ Power off the device.
 - **Left zone**: GPS satellite dish icon with satellite count (when GPS is on), envelope icon with unread message count (clears when Messages page is viewed), speed/compass heading (auto-shown when moving)
 - **Center**: HH:MM clock (when RTC is set)
 - **Right zone**: vertical battery icon (or voltage text if enabled), mute icon (when buzzer is off), signal indicators (when enabled — fades after 5 minutes):
-  - **RX** (`R[bars]XX`): how well we hear repeaters. Updates on any received packet; when retransmissions of a sent message are heard, cycles through all heard repeaters every 2 seconds.
-  - **TX** (`T[bars]XX`): how well repeaters hear us. Populated from ping `snr_there` data — after sending a message, heard repeaters (if in contacts) are auto-pinged to get accurate TX signal. Also updated by user-initiated pings.
-  - Layout: `T████AA|R████BB` (TX appears left of `|` only when data exists)
+  - **RX** (`R████XX`): how well we hear repeaters. Updates on any received packet; when retransmissions of a sent message are heard, cycles through all heard repeaters every 2 seconds (at least 2 full rotations before returning to live).
+  - **TX** (`T████XX`): how well repeaters hear us. Populated from ping `snr_there` data — after sending a message, heard repeaters (if in contacts) are auto-pinged to get accurate TX signal. Also updated by user-initiated pings.
+  - The T/R labels are stacked on top of the shortest bar to save horizontal space. TX section only appears when data exists.
 
 ## Companion App Sync
 

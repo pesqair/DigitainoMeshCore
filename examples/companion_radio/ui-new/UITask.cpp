@@ -661,7 +661,7 @@ class HomeScreen : public UIScreen {
         }
       }
 
-      // --- Draw right-to-left: RX hex, RX bars, "R", separator, TX hex, TX bars, "T" ---
+      // --- Draw right-to-left: RX hex + bars (R on bar0), gap, TX hex + bars (T on bar0) ---
 
       // RX hex ID
       if (has_rx && rx_id != 0) {
@@ -673,9 +673,12 @@ class HomeScreen : public UIScreen {
         display.print(hex_id);
       }
 
-      // RX bars
+      // RX bars with "R" label stacked on bar 0
       right_x -= bars_w;
       int bars_x = right_x;
+      display.setColor(DisplayDriver::LIGHT);
+      display.setCursor(bars_x, bars_y);
+      display.print("R");  // drawn first, bars overlay on top
       for (int b = 0; b < 4; b++) {
         int bh = 3 + b * 2;
         int bx = bars_x + b * 3;
@@ -689,29 +692,24 @@ class HomeScreen : public UIScreen {
         }
       }
 
-      // "R" label
-      right_x -= 6;
-      display.setColor(DisplayDriver::LIGHT);
-      display.setCursor(right_x, 3);
-      display.print("R");
-
       // TX section (only when data exists)
       if (has_tx) {
-        // "|" separator
-        right_x -= 6;
-        display.setCursor(right_x, 3);
-        display.print("|");
+        right_x -= 2;  // gap between RX and TX
 
         // TX hex ID
         char tx_hex[4];
         snprintf(tx_hex, sizeof(tx_hex), "%02X", tx_id);
         right_x -= 12;
+        display.setColor(DisplayDriver::LIGHT);
         display.setCursor(right_x, 3);
         display.print(tx_hex);
 
-        // TX bars
+        // TX bars with "T" label stacked on bar 0
         right_x -= bars_w;
         bars_x = right_x;
+        display.setColor(DisplayDriver::LIGHT);
+        display.setCursor(bars_x, bars_y);
+        display.print("T");  // drawn first, bars overlay on top
         for (int b = 0; b < 4; b++) {
           int bh = 3 + b * 2;
           int bx = bars_x + b * 3;
@@ -724,11 +722,6 @@ class HomeScreen : public UIScreen {
             display.fillRect(bx, bars_y + 9, 2, 1);
           }
         }
-
-        // "T" label
-        right_x -= 6;
-        display.setCursor(right_x, 3);
-        display.print("T");
       }
 
       right_x -= 1;
