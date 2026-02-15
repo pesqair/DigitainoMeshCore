@@ -45,11 +45,13 @@ public:
   virtual void notify(UIEventType t = UIEventType::none) = 0;
   virtual void loop() = 0;
   virtual void matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) { }
-  virtual void onRxPacket(uint8_t first_path_byte) { _last_rx_id = first_path_byte; _last_rx_time = millis(); }
+  virtual void onRxPacket(uint8_t first_path_byte, int16_t rssi, int8_t snr_x4) { _last_rx_id = first_path_byte; _last_rx_time = millis(); _last_rx_rssi = rssi; _last_rx_snr_x4 = snr_x4; }
   virtual void onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_x4) { }
   virtual void logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4, uint8_t route_type = 0, uint8_t payload_len = 0) { }
   uint8_t _last_rx_id = 0;
   unsigned long _last_rx_time = 0;
+  int16_t _last_rx_rssi = 0;
+  int8_t _last_rx_snr_x4 = 0;
   virtual void onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature, float gps_lat = 0, float gps_lon = 0) { }
   virtual void onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, uint16_t batt_mv) { }
   virtual void onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, uint8_t path_len, const uint8_t* pub_key, uint8_t pub_key_len) { }

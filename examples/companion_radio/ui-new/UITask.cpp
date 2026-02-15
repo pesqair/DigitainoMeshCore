@@ -593,7 +593,9 @@ class HomeScreen : public UIScreen {
         unsigned long age_s = (millis() - _task->_last_rx_time) / 1000;
         if (age_s < 300) {  // within 5 minutes
           has_signal = true;
-          float snr = radio_driver.getLastSNR();
+          _needs_fast_refresh = true;
+          // Use stored SNR from reception time (not radio_driver which may have changed)
+          float snr = (float)_task->_last_rx_snr_x4 / 4.0f;
           if (snr > 10) bars = 4;
           else if (snr > 5) bars = 3;
           else if (snr > 0) bars = 2;

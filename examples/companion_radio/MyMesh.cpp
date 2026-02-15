@@ -286,11 +286,13 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
     uint8_t plen = raw[i++];
     if (i + plen > len) return;
     const uint8_t* path = &raw[i];
-    // Track first path byte for display (nearest node hash)
+    // Track first path byte and signal for display (nearest node hash)
+    int16_t rx_rssi = (int16_t)_radio->getLastRSSI();
+    int8_t rx_snr_x4 = (int8_t)(_radio->getLastSNR() * 4.0f);
     if (plen > 0) {
-      _ui->onRxPacket(path[0]);
+      _ui->onRxPacket(path[0], rx_rssi, rx_snr_x4);
     } else if (i + plen < len) {
-      _ui->onRxPacket(raw[i + plen]);  // first payload byte as fallback
+      _ui->onRxPacket(raw[i + plen], rx_rssi, rx_snr_x4);  // first payload byte as fallback
     }
     i += plen;
     int payload_len = len - i;
