@@ -106,9 +106,10 @@ Power off the device.
 
 - **Left zone**: HH:MM clock, GPS satellite dish icon with satellite count (when GPS is on), envelope icon with unread message count (clears when Messages page is viewed), speed/compass heading (auto-shown when moving)
 - **Right zone**: vertical battery icon (or voltage text if enabled), mute icon (when buzzer is off), signal indicators (when enabled — fades after 5 minutes):
-  - **RX** (`▼████XX`): how well we hear repeaters. Updates on any received packet; when retransmissions of a sent message are heard, cycles through all heard repeaters every 2 seconds (at least 2 full rotations before returning to live).
-  - **TX** (`▲████XX`): how well repeaters hear us. Populated from ping `snr_there` data — after sending a message, heard repeaters (if in contacts) are auto-pinged to get accurate TX signal. Also updated by user-initiated pings.
-  - Tiny arrow icons (▲ up = TX, ▼ down = RX) are drawn above the shortest bar to save horizontal space. TX section only appears when data exists.
+  - **RX** (`▼████XX`): how well we hear repeaters. Accumulates entries for all heard repeaters with a rolling average (75/25 EMA). Cycles through multiple repeaters every 2 seconds.
+  - **TX** (`▲████XX`): how well repeaters hear us. Auto-pings each heard repeater after a 2-second settle delay to get `snr_there`. Shows `?` while ping is pending, red `X` if ping failed, green bars on success.
+  - Arrow blink: ▼ blinks green for 600ms on packet receive, ▲ blinks green for 600ms on packet transmit.
+  - **Signal probe** (double-click CANCEL): runs a discovery scan to find nearby repeaters, then auto-pings each for fresh bidirectional signal data. Shows "Signal probe..." alert. Also auto-triggers after 5 minutes of radio silence.
 
 ## Companion App Sync
 

@@ -45,19 +45,12 @@ public:
   virtual void notify(UIEventType t = UIEventType::none) = 0;
   virtual void loop() = 0;
   virtual void matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4) { }
-  virtual void onRxPacket(uint8_t first_path_byte, int16_t rssi, int8_t snr_x4) {
-    // Suppress live RX updates while auto-pings are in progress
-    if (_auto_ping_queue_count > 0 && (_auto_ping_next < _auto_ping_queue_count || _auto_ping_pending)) return;
-    // New packet breaks cycling
-    _signal_count = 0;
-    _last_rx_id = first_path_byte; _last_rx_time = millis(); _last_rx_rssi = rssi; _last_rx_snr_x4 = snr_x4;
-  }
-  virtual void onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_x4) { }
-  virtual void logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4, uint8_t route_type = 0, uint8_t payload_len = 0) { }
+
   uint8_t _last_rx_id = 0;
   unsigned long _last_rx_time = 0;
   int16_t _last_rx_rssi = 0;
   int8_t _last_rx_snr_x4 = 0;
+  unsigned long _last_tx_time = 0;
 
   // Unified per-repeater signal display (status bar)
   #define SIGNAL_MAX 8
@@ -67,6 +60,7 @@ public:
     int8_t tx_snr_x4;   // TX: how well they hear us (from ping snr_there)
     bool has_rx;         // RX data available
     bool has_tx;         // TX data available (ping succeeded)
+    bool tx_failed;      // ping was attempted but failed
   };
   SignalEntry _signals[SIGNAL_MAX];
   uint8_t _signal_count = 0;
@@ -83,6 +77,49 @@ public:
   unsigned long _auto_ping_timeout = 0; // response timeout
   uint8_t _auto_ping_current_id = 0;    // hash of repeater being pinged
   unsigned long _auto_ping_next_time = 0; // when to send next ping
+
+  // Signal probe state
+  bool _probe_active = false;        // discovery scan phase in progress
+  bool _probe_done = false;          // prevents re-triggering auto-probe until new RX
+  unsigned long _probe_timeout = 0;  // discovery scan timeout
+  uint32_t _probe_scan_tag = 0;      // tag for this probe's discovery scan
+
+  virtual void onRxPacket(uint8_t first_path_byte, int16_t rssi, int8_t snr_x4) {
+    _probe_done = false;
+    _last_rx_id = first_path_byte; _last_rx_time = millis(); _last_rx_rssi = rssi; _last_rx_snr_x4 = snr_x4;
+    if (first_path_byte == 0) return;  // direct packet, no repeater
+
+    // Find or add repeater in _signals[]
+    int idx = -1;
+    for (int i = 0; i < _signal_count; i++) {
+      if (_signals[i].id == first_path_byte) { idx = i; break; }
+    }
+    if (idx < 0 && _signal_count < SIGNAL_MAX) {
+      idx = _signal_count++;
+      _signals[idx].id = first_path_byte;
+      _signals[idx].has_tx = false;
+      _signals[idx].tx_failed = false;
+      _signals[idx].tx_snr_x4 = 0;
+      _signals[idx].rx_snr_x4 = snr_x4;
+      _signals[idx].has_rx = true;
+    } else if (idx >= 0) {
+      // Rolling average: 75% old + 25% new
+      _signals[idx].rx_snr_x4 = (int8_t)((_signals[idx].rx_snr_x4 * 3 + snr_x4) / 4);
+    }
+    _signal_time = millis();
+
+    // Queue auto-ping if idle and this repeater needs TX data
+    bool ping_busy = (_auto_ping_queue_count > 0 &&
+                      (_auto_ping_next < _auto_ping_queue_count || _auto_ping_pending));
+    if (!ping_busy && idx >= 0 && !_signals[idx].has_tx) {
+      _auto_ping_queue[0] = first_path_byte;
+      _auto_ping_queue_count = 1;
+      _auto_ping_next = 0;
+      _auto_ping_next_time = millis() + 2000;  // 2s delay: let packet burst settle
+    }
+  }
+  virtual void onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_x4) { }
+  virtual void logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4, uint8_t route_type = 0, uint8_t payload_len = 0) { }
 
   virtual void onTelemetryResponse(const ContactInfo& contact, float voltage, float temperature, float gps_lat = 0, float gps_lon = 0) { }
   virtual void onStatusResponse(const ContactInfo& contact, uint32_t uptime_secs, uint16_t batt_mv) { }

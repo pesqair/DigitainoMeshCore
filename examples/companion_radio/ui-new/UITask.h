@@ -65,6 +65,7 @@ class UITask : public AbstractUITask {
   char handleLongPress(char c);
   char handleDoubleClick(char c);
   char handleTripleClick(char c);
+  void startSignalProbe(bool manual = true);
 
   void setCurrScreen(UIScreen* c);
 

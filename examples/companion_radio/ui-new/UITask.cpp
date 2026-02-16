@@ -597,6 +597,14 @@ class HomeScreen : public UIScreen {
       int bars_w = 11;
       int bars_y = 3;
 
+      // Blink arrows on recent activity (300ms on/off)
+      bool rx_recent = _task->_last_rx_time > 0 && (millis() - _task->_last_rx_time) < 600;
+      bool tx_recent = _task->_last_tx_time > 0 && (millis() - _task->_last_tx_time) < 600;
+      bool blink_phase = (millis() / 150) & 1;  // toggles every 150ms
+      bool rx_blink_on = rx_recent ? blink_phase : true;
+      bool tx_blink_on = tx_recent ? blink_phase : true;
+      if (rx_recent || tx_recent) _needs_fast_refresh = true;
+
       bool use_cycling = _task->_signal_count > 0 &&
                          (millis() - _task->_signal_time) / 1000 < 300;
       bool use_live = !use_cycling &&
@@ -623,10 +631,12 @@ class HomeScreen : public UIScreen {
         // Draw RX bars with down-arrow (▼) on bar 0
         right_x -= bars_w;
         int bars_x = right_x;
-        display.setColor(DisplayDriver::LIGHT);
-        display.fillRect(bars_x, bars_y, 5, 1);
-        display.fillRect(bars_x + 1, bars_y + 1, 3, 1);
-        display.fillRect(bars_x + 2, bars_y + 2, 1, 1);
+        if (rx_blink_on) {
+          display.setColor(rx_recent ? DisplayDriver::GREEN : DisplayDriver::LIGHT);
+          display.fillRect(bars_x, bars_y, 5, 1);
+          display.fillRect(bars_x + 1, bars_y + 1, 3, 1);
+          display.fillRect(bars_x + 2, bars_y + 2, 1, 1);
+        }
         for (int b = 0; b < 4; b++) {
           int bh = 3 + b * 2;
           int bx = bars_x + b * 3;
@@ -645,10 +655,12 @@ class HomeScreen : public UIScreen {
         // Draw TX bars with up-arrow (▲) on bar 0
         right_x -= bars_w;
         bars_x = right_x;
-        display.setColor(DisplayDriver::LIGHT);
-        display.fillRect(bars_x + 2, bars_y, 1, 1);
-        display.fillRect(bars_x + 1, bars_y + 1, 3, 1);
-        display.fillRect(bars_x, bars_y + 2, 5, 1);
+        if (tx_blink_on) {
+          display.setColor(tx_recent ? DisplayDriver::GREEN : DisplayDriver::LIGHT);
+          display.fillRect(bars_x + 2, bars_y, 1, 1);
+          display.fillRect(bars_x + 1, bars_y + 1, 3, 1);
+          display.fillRect(bars_x, bars_y + 2, 5, 1);
+        }
         if (entry.has_tx) {
           int tx_bars = 0;
           float tx_snr = (float)entry.tx_snr_x4 / 4.0f;
@@ -668,8 +680,13 @@ class HomeScreen : public UIScreen {
               display.fillRect(bx, bars_y + 9, 2, 1);
             }
           }
+        } else if (entry.tx_failed) {
+          // TX ping failed — draw "X"
+          display.setColor(DisplayDriver::RED);
+          display.setCursor(bars_x + 3, bars_y + 3);
+          display.print("X");
         } else {
-          // TX pending/failed — draw "?"
+          // TX ping pending — draw "?"
           display.setColor(DisplayDriver::LIGHT);
           display.setCursor(bars_x + 3, bars_y + 3);
           display.print("?");
@@ -698,10 +715,12 @@ class HomeScreen : public UIScreen {
         // Draw RX bars with down-arrow (▼)
         right_x -= bars_w;
         int bars_x = right_x;
-        display.setColor(DisplayDriver::LIGHT);
-        display.fillRect(bars_x, bars_y, 5, 1);
-        display.fillRect(bars_x + 1, bars_y + 1, 3, 1);
-        display.fillRect(bars_x + 2, bars_y + 2, 1, 1);
+        if (rx_blink_on) {
+          display.setColor(rx_recent ? DisplayDriver::GREEN : DisplayDriver::LIGHT);
+          display.fillRect(bars_x, bars_y, 5, 1);
+          display.fillRect(bars_x + 1, bars_y + 1, 3, 1);
+          display.fillRect(bars_x + 2, bars_y + 2, 1, 1);
+        }
         for (int b = 0; b < 4; b++) {
           int bh = 3 + b * 2;
           int bx = bars_x + b * 3;
@@ -5595,6 +5614,7 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
           _signals[_signal_count].rx_snr_x4 = entry.repeat_path_snr_x4[r];
           _signals[_signal_count].has_rx = true;
           _signals[_signal_count].has_tx = false;  // pending auto-ping
+          _signals[_signal_count].tx_failed = false;
           _signals[_signal_count].tx_snr_x4 = 0;
           _signal_count++;
         }
@@ -5743,6 +5763,28 @@ void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, 
   if (!home) return;
   HomeScreen* hs = (HomeScreen*)home;
 
+  // Signal probe mode: collect repeaters for auto-ping
+  if (_probe_active && node_type == ADV_TYPE_REPEATER && pub_key_len >= 1) {
+    uint8_t id = pub_key[0];
+    // Dedup against existing _signals[] entries
+    bool dup = false;
+    for (int i = 0; i < _signal_count; i++) {
+      if (_signals[i].id == id) { dup = true; break; }
+    }
+    if (!dup && _signal_count < SIGNAL_MAX && _auto_ping_queue_count < AUTO_PING_QUEUE_MAX) {
+      _signals[_signal_count].id = id;
+      _signals[_signal_count].rx_snr_x4 = snr_x4;
+      _signals[_signal_count].has_rx = true;
+      _signals[_signal_count].tx_snr_x4 = 0;
+      _signals[_signal_count].has_tx = false;
+      _signals[_signal_count].tx_failed = false;
+      _signal_count++;
+      _signal_time = millis();
+      _auto_ping_queue[_auto_ping_queue_count++] = id;
+    }
+    // Fall through — NearbyScreen handler below won't trigger since _scan_active is false
+  }
+
   if (!hs->_scan_active) return;
 
   // Check for duplicate by pub_key prefix (4 bytes)
@@ -5851,6 +5893,10 @@ void UITask::loop() {
   ev = back_btn.check();
   if (ev == BUTTON_EVENT_CLICK) {
     c = checkDisplayOn(KEY_CANCEL);
+  } else if (ev == BUTTON_EVENT_DOUBLE_CLICK) {
+    checkDisplayOn(KEY_CANCEL);
+    startSignalProbe(true);
+    c = 0;
   } else if (ev == BUTTON_EVENT_TRIPLE_CLICK) {
     c = handleTripleClick(KEY_SELECT);
   }
@@ -5919,23 +5965,57 @@ void UITask::loop() {
           _auto_ping_current_id = hash;
           _auto_ping_timeout = millis() + est_timeout + 2000;
         } else {
-          // Send failed — entry stays with has_tx=false (shows "?")
+          // Send failed — mark tx_failed on signal entry
+          for (uint8_t i = 0; i < _signal_count; i++) {
+            if (_signals[i].id == hash) { _signals[i].tx_failed = true; break; }
+          }
           _auto_ping_next++;
           _auto_ping_next_time = millis() + 1000;
         }
       } else {
-        // Repeater not in contacts — entry stays with has_tx=false (shows "?")
+        // Repeater not in contacts — mark tx_failed on signal entry
+        for (uint8_t i = 0; i < _signal_count; i++) {
+          if (_signals[i].id == hash) { _signals[i].tx_failed = true; break; }
+        }
         _auto_ping_next++;
         _auto_ping_next_time = millis() + 500;
       }
     }
   }
 
-  // Auto-ping timeout — entry stays with has_tx=false (shows "?")
+  // Auto-ping timeout — mark tx_failed on signal entry
   if (_auto_ping_pending && millis() > _auto_ping_timeout) {
+    for (uint8_t i = 0; i < _signal_count; i++) {
+      if (_signals[i].id == _auto_ping_current_id) { _signals[i].tx_failed = true; break; }
+    }
     _auto_ping_pending = false;
     _auto_ping_next++;
     _auto_ping_next_time = millis() + 1000;
+  }
+
+  // Auto-ping queue fully drained — reset so probe can re-trigger
+  if (_auto_ping_queue_count > 0 && _auto_ping_next >= _auto_ping_queue_count && !_auto_ping_pending) {
+    _auto_ping_queue_count = 0;
+  }
+
+  // Signal probe completion: discovery scan finished
+  if (_probe_active && millis() > _probe_timeout) {
+    _probe_active = false;
+    if (_auto_ping_queue_count > 0) {
+      _auto_ping_next = 0;
+      _auto_ping_next_time = millis() + 500;
+    } else {
+      showAlert("No repeaters found", 1500);
+    }
+  }
+
+  // Auto-trigger signal probe when signal data goes stale (5 min)
+  if (!_probe_active && !_probe_done && _auto_ping_queue_count == 0 &&
+      _last_rx_time > 0 && !_auto_ping_pending) {
+    unsigned long now = millis();
+    if ((now - _signal_time > 300000) && (now - _last_rx_time > 300000)) {
+      startSignalProbe(false);
+    }
   }
 
 #ifdef PIN_BUZZER
@@ -6024,6 +6104,37 @@ char UITask::handleDoubleClick(char c) {
   MESH_DEBUG_PRINTLN("UITask: double click triggered");
   checkDisplayOn(c);
   return c;
+}
+
+void UITask::startSignalProbe(bool manual) {
+  if (_probe_active) return;  // already probing
+
+  HomeScreen* hs = home ? (HomeScreen*)home : nullptr;
+  if (!hs) return;
+
+  // Don't interfere with NearbyScreen scan, active pings, or user composing
+  if (hs->_scan_active) return;
+  if (_auto_ping_queue_count > 0) return;
+  if (_auto_ping_pending) return;
+  if (hs->_ct_ping_pending) return;
+  if (curr == compose || curr == contact_select || curr == channel_select) return;
+
+  // Start discovery scan
+  _probe_scan_tag = random(1, 0x7FFFFFFF);
+  the_mesh.startDiscoveryScan(_probe_scan_tag);
+  _probe_active = true;
+  _probe_timeout = millis() + 8000;
+  _probe_done = true;
+
+  // Reset signal + auto-ping state for fresh results
+  _signal_count = 0;
+  _signal_cycle = 0;
+  _auto_ping_queue_count = 0;
+  _auto_ping_next = 0;
+
+  if (manual) {
+    showAlert("Signal probe...", 2000);
+  }
 }
 
 char UITask::handleTripleClick(char c) {

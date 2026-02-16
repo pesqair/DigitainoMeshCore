@@ -468,6 +468,7 @@ int MyMesh::sendPing(const ContactInfo& contact, uint32_t& est_timeout) {
   uint8_t path[6];
   memcpy(path, contact.id.pub_key, 6);
   sendDirect(pkt, path, 6);
+  if (_ui) _ui->_last_tx_time = millis();
   uint32_t t = _radio->getEstAirtimeFor(pkt->payload_len + pkt->path_len + 2);
   est_timeout = calcDirectTimeoutMillisFor(t, 6);
   ui_pending_ping_tag = tag;
@@ -483,6 +484,7 @@ void MyMesh::startDiscoveryScan(uint32_t tag) {
   memcpy(&data[2], &tag, 4);
   auto pkt = createControlData(data, sizeof(data));
   if (pkt) {
+    if (_ui) _ui->_last_tx_time = millis();
     sendZeroHop(pkt);
   }
 }
@@ -594,6 +596,7 @@ bool MyMesh::allowPacketForward(const mesh::Packet* packet) {
 
 void MyMesh::sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis) {
   pkt->calculatePacketHash(_last_sent_hash);
+  if (_ui) _ui->_last_tx_time = millis();
   // TODO: dynamic send_scope, depending on recipient and current 'home' Region
   if (send_scope.isNull()) {
     sendFlood(pkt, delay_millis);
@@ -606,6 +609,7 @@ void MyMesh::sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, ui
 }
 void MyMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t delay_millis) {
   pkt->calculatePacketHash(_last_sent_hash);
+  if (_ui) _ui->_last_tx_time = millis();
   // TODO: have per-channel send_scope
   if (send_scope.isNull()) {
     sendFlood(pkt, delay_millis);
