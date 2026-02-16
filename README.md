@@ -65,7 +65,7 @@ Dedicated view of all tracked repeater signal entries, sorted by most recently h
 - **Ping**: Queue an immediate ping to the repeater (clears previous TX data)
 - **Delete**: Remove the signal entry from the list
 
-Detail view shows repeater name (if in contacts), RX/TX SNR in dB, packet counts, RTT, and age.
+Detail view shows repeater name (if in contacts), RX/TX SNR in dB, packet counts, RTT, and age. Scrollable with UP/DOWN to see all details.
 
 Signal data is kept fresh by a priority-based refresh sweep every 60 seconds: the best repeater (bidirectional, strongest signal) is re-pinged first if stale (>60s), then remaining entries are refreshed if stale (>120s) or previously failed. The best repeater goes first in the ping queue so if it fails, the next-best is tried immediately. Ping responses update both TX and RX signal data. New signal entries are suppressed while a ping is in flight to prevent reply routing from creating spurious entries.
 
@@ -102,7 +102,15 @@ Live sensor data display (battery voltage, temperature, humidity, pressure, alti
 
 ### Settings
 
-Toggle options: GMT offset (LEFT/RIGHT to adjust -12 to +14, applies to clock and message timestamps), battery voltage display (text instead of icon), signal bars (with repeater ID), speed HUD, beep w/ BLE (play buzzer for incoming messages even when companion app is connected), Bluetooth, and GPS.
+Toggle options: GMT offset (LEFT/RIGHT to adjust -12 to +14, applies to clock and message timestamps), battery voltage display (text instead of icon), signal bars (with repeater ID), speed HUD, beep w/ BLE (play buzzer for incoming messages even when companion app is connected), Auto TX check, motion mode (GPS required), Bluetooth, and GPS.
+
+**Motion Mode** (requires GPS): Adapts all signal timing constants for mobile use. Four settings cycled with ENTER:
+- **Off**: Normal stationary timings
+- **Auto**: Selects tier based on GPS speed — bike tier (timings /2) above 5 mph, drive tier (timings /4) above 25 mph
+- **Bike**: Bike tier always active (timings /2)
+- **Drive**: Drive tier always active (timings /4)
+
+Affected timings: sweep interval, best/non-best repeater refresh, prune age, fail retry, and probe stale threshold. In drive mode, stale repeaters are pruned at 75s instead of 5 minutes, and new repeaters are discovered in 7.5s sweeps.
 
 ### Advert
 
@@ -129,7 +137,7 @@ Always-visible top bar with three zones:
   - **RX (▼)**: Shows how well you hear nearby repeaters. Builds up a picture over time as packets arrive — the reading smooths out rather than jumping on every packet. Always shows the most recently heard repeater.
   - **TX (▲)**: Shows how well repeaters hear you. The device automatically pings repeaters it hears to measure this. Shows `?` while waiting for a response, red `X` if the ping failed, green bars when successful.
   - **Arrow blink**: The ▼ and ▲ arrows blink green briefly when a packet is received or sent.
-  - **Signal probe**: Double-click CANCEL to do a full scan for nearby repeaters and ping each one. Also runs automatically if no packets have been heard for 5 minutes.
+  - **Signal probe**: Double-click CANCEL to do a full scan for nearby repeaters and ping each one. Also runs automatically if no packets have been heard for 5 minutes (or sooner in motion mode).
 
 ## Companion App Sync
 

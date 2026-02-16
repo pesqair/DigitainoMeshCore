@@ -65,6 +65,8 @@ public:
     uint16_t rx_count;   // number of packets received from this repeater
     uint16_t tx_count;   // number of ack'd pings to this repeater
     uint32_t last_rtt_ms; // last ping round-trip time in ms (0 = unknown)
+    uint8_t fail_count;           // consecutive ping failures (for backoff)
+    unsigned long last_fail_time; // millis() when last failure occurred
   };
   SignalEntry _signals[SIGNAL_MAX];
   uint8_t _signal_count = 0;
@@ -82,6 +84,12 @@ public:
   uint8_t _auto_ping_current_id = 0;    // hash of repeater being pinged
   unsigned long _auto_ping_next_time = 0; // when to send next ping
   unsigned long _retry_ping_time = 0;  // when to next sweep for failed pings to retry
+
+  // Adaptive TX check state
+  bool _auto_tx_enabled = true;        // toggle from settings (persisted via ui_flags bit4)
+  uint8_t _motion_mode = 0;            // 0=off, 1=auto, 2=bike, 3=drive (ui_flags bits 5-6)
+  uint8_t _best_ping_id = 0;           // currently tracked best repeater hash
+  uint8_t _best_ping_count = 0;        // number of checks since last reset
 
   // Signal probe state
   bool _probe_active = false;        // discovery scan phase in progress
@@ -115,6 +123,8 @@ public:
       _signals[idx].rx_count = 1;
       _signals[idx].tx_count = 0;
       _signals[idx].last_rtt_ms = 0;
+      _signals[idx].fail_count = 0;
+      _signals[idx].last_fail_time = 0;
     } else if (idx < 0) {
       // Array full — evict oldest entry
       int oldest = 0;
@@ -132,6 +142,8 @@ public:
       _signals[idx].rx_count = 1;
       _signals[idx].tx_count = 0;
       _signals[idx].last_rtt_ms = 0;
+      _signals[idx].fail_count = 0;
+      _signals[idx].last_fail_time = 0;
     } else {
       // Rolling average: 75% old + 25% new
       _signals[idx].rx_snr_x4 = (int8_t)((_signals[idx].rx_snr_x4 * 3 + snr_x4) / 4);
@@ -140,10 +152,15 @@ public:
     }
     _signal_time = millis();
 
+    // Organic RX from best repeater resets adaptive backoff to fast schedule
+    if (first_path_byte == _best_ping_id && !_auto_ping_pending) {
+      _best_ping_count = 0;
+    }
+
     // Queue auto-ping if idle and this repeater needs TX data
     bool ping_busy = (_auto_ping_queue_count > 0 &&
                       (_auto_ping_next < _auto_ping_queue_count || _auto_ping_pending));
-    if (!ping_busy && idx >= 0 && !_signals[idx].has_tx) {
+    if (_auto_tx_enabled && !ping_busy && idx >= 0 && !_signals[idx].has_tx) {
       _auto_ping_queue[0] = first_path_byte;
       _auto_ping_queue_count = 1;
       _auto_ping_next = 0;

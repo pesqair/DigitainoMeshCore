@@ -228,6 +228,8 @@ class HomeScreen : public UIScreen {
   bool _show_speed;
   bool _show_snr;
   bool _beep_on_ble;
+  bool _auto_tx_check;
+  uint8_t _motion_mode_setting;
   int8_t _gmt_offset;
   uint8_t _pkt_sel;  // selected packet in packet log page
   bool _pkt_detail;           // whether detail view is showing
@@ -377,6 +379,7 @@ class HomeScreen : public UIScreen {
   uint8_t _sig_sel;
   bool _sig_action;
   uint8_t _sig_action_sel;
+  uint8_t _sig_detail_scroll;
 
   // Build message filter options by scanning message log for unique channel_idx values and DM contacts
   void rebuildMsgFilters() {
@@ -612,9 +615,28 @@ class HomeScreen : public UIScreen {
       bool tx_blink_on = tx_recent ? blink_phase : true;
       if (rx_recent || tx_recent) _needs_fast_refresh = true;
 
-      // Prune stale entries (>5 min since last heard)
+      // Motion-aware prune threshold
+      unsigned long prune_ms = 300000UL;
+#if ENV_INCLUDE_GPS == 1
+      {
+        unsigned int ptd = 1;
+        if (_task->_motion_mode == 2) { ptd = 2; }
+        else if (_task->_motion_mode == 3) { ptd = 4; }
+        else if (_task->_motion_mode == 1) {
+          LocationProvider* nmea = sensors.getLocationProvider();
+          if (nmea != NULL && nmea->isValid()) {
+            float speed_mph = nmea->getSpeed() / 1000.0f * 1.15078f;
+            if (speed_mph >= 25.0f) ptd = 4;
+            else if (speed_mph >= 5.0f) ptd = 2;
+          }
+        }
+        prune_ms /= ptd;
+      }
+#endif
+
+      // Prune stale entries (>prune_ms since last heard)
       for (int i = 0; i < _task->_signal_count; ) {
-        if (millis() - _task->_signals[i].last_heard > 300000) {
+        if (millis() - _task->_signals[i].last_heard > prune_ms) {
           // Shift remaining entries down
           for (int j = i; j < _task->_signal_count - 1; j++) {
             _task->_signals[j] = _task->_signals[j + 1];
@@ -629,10 +651,10 @@ class HomeScreen : public UIScreen {
       }
 
       bool use_cycling = _task->_signal_count > 0 &&
-                         (millis() - _task->_signal_time) / 1000 < 300;
+                         (millis() - _task->_signal_time) / 1000 < (prune_ms / 1000);
       bool use_live = !use_cycling &&
                       _task->_last_rx_time > 0 &&
-                      (millis() - _task->_last_rx_time) / 1000 < 300;
+                      (millis() - _task->_last_rx_time) / 1000 < (prune_ms / 1000);
 
       if (use_cycling) {
         // Pick best repeater: prioritize bidirectional (has_tx + has_rx), then strongest signal
@@ -777,6 +799,29 @@ class HomeScreen : public UIScreen {
         display.setColor(DisplayDriver::LIGHT);
         display.setCursor(right_x, 3);
         display.print(hex_id);
+      } else {
+        // No signal data — draw "no svc" indicator
+        // Empty bar outlines (dots at base) with X overlay
+        int bars_x_start = right_x - 11;
+        right_x = bars_x_start;
+        display.setColor(DisplayDriver::LIGHT);
+        for (int b = 0; b < 4; b++) {
+          display.fillRect(bars_x_start + b * 3, bars_y + 9, 2, 1);
+        }
+        // X slash over the bars
+        display.fillRect(bars_x_start + 1, bars_y + 3, 1, 1);
+        display.fillRect(bars_x_start + 3, bars_y + 5, 1, 1);
+        display.fillRect(bars_x_start + 5, bars_y + 7, 1, 1);
+        display.fillRect(bars_x_start + 7, bars_y + 9, 1, 1);
+        display.fillRect(bars_x_start + 7, bars_y + 3, 1, 1);
+        display.fillRect(bars_x_start + 5, bars_y + 5, 1, 1);
+        display.fillRect(bars_x_start + 3, bars_y + 7, 1, 1);
+        display.fillRect(bars_x_start + 1, bars_y + 9, 1, 1);
+        // "no svc" text
+        right_x -= 2;
+        right_x -= 6 * 6;  // 6 chars * 6px
+        display.setCursor(right_x, 3);
+        display.print("no svc");
       }
 
       right_x -= 1;
@@ -897,12 +942,18 @@ class HomeScreen : public UIScreen {
     }
   }
 
+  uint8_t buildUiFlags() const {
+    return (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) |
+           (_show_speed ? 0x04 : 0) | (_beep_on_ble ? 0x08 : 0) |
+           (_auto_tx_check ? 0 : 0x10) | ((_motion_mode_setting & 0x03) << 5);
+  }
+
 public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, SensorManager* sensors, NodePrefs* node_prefs)
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
        _preset_sel(0), _msg_sel(0xFF), _msg_sel_prev(0xFF), _msg_scroll_px(0),
        _msg_detail(false), _msg_detail_scroll(0), _msg_reply_menu(false), _msg_reply_sel(0), _shutdown_init(false), _show_voltage(node_prefs->ui_flags & 0x01), _show_speed(node_prefs->ui_flags & 0x04),
-       _show_snr(node_prefs->ui_flags & 0x02), _beep_on_ble(node_prefs->ui_flags & 0x08), _gmt_offset(node_prefs->gmt_offset), _pkt_sel(0), _pkt_detail(false), _pkt_detail_scroll(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _odo_last_lat(0), _odo_last_lon(0), _nav_screen_lock(false), _nav_has_waypoint(false),
+       _show_snr(node_prefs->ui_flags & 0x02), _beep_on_ble(node_prefs->ui_flags & 0x08), _auto_tx_check(!(node_prefs->ui_flags & 0x10)), _motion_mode_setting((node_prefs->ui_flags >> 5) & 0x03), _gmt_offset(node_prefs->gmt_offset), _pkt_sel(0), _pkt_detail(false), _pkt_detail_scroll(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _odo_last_lat(0), _odo_last_lon(0), _nav_screen_lock(false), _nav_has_waypoint(false),
        _page_active(false), _settings_sel(0), _ct_filter(0), _msg_vscroll(0), _msg_filter(0), _msg_filter_count(0), _msg_compose_menu(false), _msg_compose_sel(0), _msg_target_menu(false), _msg_target_sel(0),
        _preset_target_choosing(false), _preset_target_sel(0), _preset_edit_mode(false), _preset_edit_sel(0),
        _ct_sel(0), _ct_count(0), _ct_action(false), _ct_action_sel(0), _ct_action_count(0), _ct_detail_scroll(0),
@@ -913,7 +964,7 @@ public:
        _ct_gps_pending(false), _ct_gps_done(false), _ct_gps_no_fix(false),
        _scan_count(0), _scan_active(false), _scan_timeout(0), _scan_tag(0),
        _scan_sel(0), _scan_action(false), _scan_action_sel(0), _scan_action_count(0), _scan_detail_scroll(0),
-       _sig_sel(0), _sig_action(false), _sig_action_sel(0),
+       _sig_sel(0), _sig_action(false), _sig_action_sel(0), _sig_detail_scroll(0),
        sensors_lpp(200) { memset(_ct_cache, 0, sizeof(_ct_cache)); memset(_scan_results, 0, sizeof(_scan_results)); }
 
   bool isUserBusy() const {
@@ -2721,9 +2772,11 @@ public:
         items[item_count] = sig_info[4]; item_is_action[item_count++] = false;
 
         if (_sig_action_sel >= 2) _sig_action_sel = 1;
+        int max_scroll = item_count > 4 ? item_count - 4 : 0;
+        if (_sig_detail_scroll > max_scroll) _sig_detail_scroll = max_scroll;
 
         int y = TOP_BAR_H + 10;
-        for (int i = 0; i < item_count; i++, y += 10) {
+        for (int i = _sig_detail_scroll; i < item_count && y < 64; i++, y += 10) {
           if (item_is_action[i] && i == _sig_action_sel) {
             display.setColor(DisplayDriver::YELLOW);
             display.setCursor(0, y);
@@ -2742,11 +2795,23 @@ public:
           display.setColor(DisplayDriver::LIGHT);
           display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "No signals yet");
         } else {
-          // Sort by most recently heard (youngest first)
+          // Sort by signal quality (best first)
           for (int i = 1; i < _task->_signal_count; i++) {
             AbstractUITask::SignalEntry tmp_se = _task->_signals[i];
             int j = i - 1;
-            while (j >= 0 && _task->_signals[j].last_heard < tmp_se.last_heard) {
+            while (j >= 0) {
+              AbstractUITask::SignalEntry& sj = _task->_signals[j];
+              bool cur_bidi = tmp_se.has_rx && tmp_se.has_tx;
+              bool cmp_bidi = sj.has_rx && sj.has_tx;
+              bool swap = false;
+              if (cur_bidi && !cmp_bidi) {
+                swap = true;
+              } else if (cur_bidi == cmp_bidi) {
+                int8_t cur_snr = cur_bidi ? min(tmp_se.rx_snr_x4, tmp_se.tx_snr_x4) : tmp_se.rx_snr_x4;
+                int8_t cmp_snr = cmp_bidi ? min(sj.rx_snr_x4, sj.tx_snr_x4) : sj.rx_snr_x4;
+                if (cur_snr > cmp_snr) swap = true;
+              }
+              if (!swap) break;
               _task->_signals[j + 1] = _task->_signals[j];
               j--;
             }
@@ -3429,13 +3494,14 @@ public:
       display.drawTextCentered(display.width() / 2, TOP_BAR_H, "-- Settings --");
 
       // Settings entries: index 0 = GMT offset (special), rest are bool toggles
-      const int max_settings = 8;
+      const int max_settings = 10;
       const char* names[max_settings];
       bool values[max_settings];
       bool is_gmt[max_settings];
       int sc = 0;
       // GMT offset (special non-bool entry)
       int id_gmt_render = sc;
+      int id_motion_render = -1;
       names[sc] = "GMT offset"; values[sc] = false; is_gmt[sc] = true; sc++;
       names[sc] = "Battery voltage"; values[sc] = _show_voltage; is_gmt[sc] = false; sc++;
       names[sc] = "Signal bars"; values[sc] = _show_snr; is_gmt[sc] = false; sc++;
@@ -3443,6 +3509,11 @@ public:
       names[sc] = "Speed HUD"; values[sc] = _show_speed; is_gmt[sc] = false; sc++;
 #endif
       names[sc] = "Beep w/ BLE"; values[sc] = _beep_on_ble; is_gmt[sc] = false; sc++;
+      names[sc] = "Auto TX check"; values[sc] = _auto_tx_check; is_gmt[sc] = false; sc++;
+#if ENV_INCLUDE_GPS == 1
+      id_motion_render = sc;
+      names[sc] = "Motion mode"; values[sc] = false; is_gmt[sc] = false; sc++;
+#endif
       names[sc] = "Bluetooth"; values[sc] = _task->isSerialEnabled(); is_gmt[sc] = false; sc++;
 #if ENV_INCLUDE_GPS == 1
       names[sc] = "GPS"; values[sc] = _task->getGPSState(); is_gmt[sc] = false; sc++;
@@ -3464,6 +3535,9 @@ public:
         }
         if (is_gmt[i]) {
           snprintf(tmp, sizeof(tmp), "%s [%s%d]", names[i], _gmt_offset >= 0 ? "+" : "", _gmt_offset);
+        } else if (i == id_motion_render) {
+          const char* mm[] = {"Off", "Auto", "Bike", "Drive"};
+          snprintf(tmp, sizeof(tmp), "%s [%s]", names[i], mm[_motion_mode_setting & 0x03]);
         } else {
           snprintf(tmp, sizeof(tmp), "%s [%s]", names[i], values[i] ? "ON" : "OFF");
         }
@@ -4086,11 +4160,13 @@ public:
           return true;
         }
         if (c == KEY_UP) {
-          if (_sig_action_sel > 0) _sig_action_sel--;
+          if (_sig_detail_scroll > 0) _sig_detail_scroll--;
+          else if (_sig_action_sel > 0) _sig_action_sel--;
           return true;
         }
         if (c == KEY_DOWN) {
           if (_sig_action_sel < 1) _sig_action_sel++;
+          else if (_sig_detail_scroll < 3) _sig_detail_scroll++;
           return true;
         }
         if (c == KEY_ENTER) {
@@ -4099,6 +4175,7 @@ public:
             if (_task->_auto_ping_queue_count == 0 && !_task->_auto_ping_pending && !_task->_probe_active) {
               AbstractUITask::SignalEntry& se = _task->_signals[_sig_sel];
               se.tx_failed = false;
+              se.fail_count = 0;
               se.has_tx = false;
               _task->_auto_ping_queue[0] = se.id;
               _task->_auto_ping_queue_count = 1;
@@ -4131,6 +4208,7 @@ public:
       if (c == KEY_ENTER && _task->_signal_count > 0) {
         _sig_action = true;
         _sig_action_sel = 0;
+        _sig_detail_scroll = 0;
         return true;
       }
       if (c == KEY_UP && _task->_signal_count > 0) {
@@ -4825,6 +4903,10 @@ public:
       int id_speed = sc++;
 #endif
       int id_beep_ble = sc++;
+      int id_auto_tx = sc++;
+#if ENV_INCLUDE_GPS == 1
+      int id_motion = sc++;
+#endif
       int id_ble = sc++;
 #if ENV_INCLUDE_GPS == 1
       int id_gps = sc++;
@@ -4855,29 +4937,52 @@ public:
           _task->showAlert(alert, 800);
         } else if (_settings_sel == id_voltage) {
           _show_voltage = !_show_voltage;
-          _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0) | (_beep_on_ble ? 0x08 : 0);
+          _node_prefs->ui_flags = buildUiFlags();
           the_mesh.savePrefs();
           _task->showAlert(_show_voltage ? "Voltage: ON" : "Voltage: OFF", 800);
         } else if (_settings_sel == id_snr) {
           _show_snr = !_show_snr;
-          _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0) | (_beep_on_ble ? 0x08 : 0);
+          _node_prefs->ui_flags = buildUiFlags();
           the_mesh.savePrefs();
           _task->showAlert(_show_snr ? "Signal: ON" : "Signal: OFF", 800);
         }
 #if ENV_INCLUDE_GPS == 1
         else if (_settings_sel == id_speed) {
           _show_speed = !_show_speed;
-          _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0) | (_beep_on_ble ? 0x08 : 0);
+          _node_prefs->ui_flags = buildUiFlags();
           the_mesh.savePrefs();
           _task->showAlert(_show_speed ? "Speed: ON" : "Speed: OFF", 800);
         }
 #endif
         else if (_settings_sel == id_beep_ble) {
           _beep_on_ble = !_beep_on_ble;
-          _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0) | (_beep_on_ble ? 0x08 : 0);
+          _node_prefs->ui_flags = buildUiFlags();
           the_mesh.savePrefs();
           _task->showAlert(_beep_on_ble ? "Beep w/ BLE: ON" : "Beep w/ BLE: OFF", 800);
         }
+        else if (_settings_sel == id_auto_tx) {
+          _auto_tx_check = !_auto_tx_check;
+          _task->_auto_tx_enabled = _auto_tx_check;
+          _node_prefs->ui_flags = buildUiFlags();
+          the_mesh.savePrefs();
+          _task->showAlert(_auto_tx_check ? "Auto TX: ON" : "Auto TX: OFF", 800);
+        }
+#if ENV_INCLUDE_GPS == 1
+        else if (_settings_sel == id_motion) {
+          _motion_mode_setting = (_motion_mode_setting + 1) & 0x03;
+          _task->_motion_mode = _motion_mode_setting;
+          _node_prefs->ui_flags = buildUiFlags();
+          the_mesh.savePrefs();
+          const char* mm[] = {"Off", "Auto", "Bike", "Drive"};
+          if (_motion_mode_setting == 1 && !_task->getGPSState()) {
+            _task->showAlert("Auto needs GPS", 1200);
+          } else {
+            char alert[24];
+            snprintf(alert, sizeof(alert), "Motion: %s", mm[_motion_mode_setting & 0x03]);
+            _task->showAlert(alert, 800);
+          }
+        }
+#endif
         else if (_settings_sel == id_ble) {
           if (_task->isSerialEnabled()) _task->disableSerial();
           else _task->enableSerial();
@@ -5491,6 +5596,8 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
 #endif
 
   _node_prefs = node_prefs;
+  _auto_tx_enabled = !(node_prefs->ui_flags & 0x10);
+  _motion_mode = (node_prefs->ui_flags >> 5) & 0x03;
 
 #if ENV_INCLUDE_GPS == 1
   // Apply GPS preferences from stored prefs
@@ -5937,6 +6044,8 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
           _signals[_signal_count].has_tx = false;  // pending auto-ping
           _signals[_signal_count].tx_failed = false;
           _signals[_signal_count].tx_snr_x4 = 0;
+          _signals[_signal_count].fail_count = 0;
+          _signals[_signal_count].last_fail_time = 0;
           _signal_count++;
         }
       }
@@ -6042,6 +6151,7 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
       if (_signals[i].id == _auto_ping_current_id) {
         _signals[i].tx_snr_x4 = (int8_t)(snr_there * 4);
         _signals[i].has_tx = true;
+        _signals[i].fail_count = 0;
         _signals[i].tx_count++;
         _signals[i].last_rtt_ms = latency_ms;
         // Update RX from ping reply (snr_back = how well we heard them)
@@ -6117,6 +6227,8 @@ void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, 
       _signals[_signal_count].rx_count = 1;
       _signals[_signal_count].tx_count = 0;
       _signals[_signal_count].last_rtt_ms = 0;
+      _signals[_signal_count].fail_count = 0;
+      _signals[_signal_count].last_fail_time = 0;
       _signal_count++;
       _signal_time = millis();
       _auto_ping_queue[_auto_ping_queue_count++] = id;
@@ -6306,7 +6418,12 @@ void UITask::loop() {
         } else {
           // Send failed — mark tx_failed on signal entry
           for (uint8_t i = 0; i < _signal_count; i++) {
-            if (_signals[i].id == hash) { _signals[i].tx_failed = true; break; }
+            if (_signals[i].id == hash) {
+              _signals[i].tx_failed = true;
+              _signals[i].fail_count++;
+              _signals[i].last_fail_time = millis();
+              break;
+            }
           }
           _auto_ping_next++;
           _auto_ping_next_time = millis() + 1000;
@@ -6314,7 +6431,12 @@ void UITask::loop() {
       } else {
         // Repeater not in contacts — mark tx_failed on signal entry
         for (uint8_t i = 0; i < _signal_count; i++) {
-          if (_signals[i].id == hash) { _signals[i].tx_failed = true; break; }
+          if (_signals[i].id == hash) {
+            _signals[i].tx_failed = true;
+            _signals[i].fail_count++;
+            _signals[i].last_fail_time = millis();
+            break;
+          }
         }
         _auto_ping_next++;
         _auto_ping_next_time = millis() + 500;
@@ -6325,7 +6447,12 @@ void UITask::loop() {
   // Auto-ping timeout — mark tx_failed on signal entry
   if (_auto_ping_pending && millis() > _auto_ping_timeout) {
     for (uint8_t i = 0; i < _signal_count; i++) {
-      if (_signals[i].id == _auto_ping_current_id) { _signals[i].tx_failed = true; break; }
+      if (_signals[i].id == _auto_ping_current_id) {
+        _signals[i].tx_failed = true;
+        _signals[i].fail_count++;
+        _signals[i].last_fail_time = millis();
+        break;
+      }
     }
     _auto_ping_pending = false;
     _auto_ping_next++;
@@ -6337,14 +6464,27 @@ void UITask::loop() {
     _auto_ping_queue_count = 0;
   }
 
-  // Priority-based signal refresh (every 60s when idle)
-  // Best repeater: re-ping every 60s to keep fresh
-  // Others: re-ping every 120s or retry if failed
-  // Best goes first in queue so it gets priority; if it fails, queue
-  // naturally falls through to the next entries
-  if (_auto_ping_queue_count == 0 && !_auto_ping_pending && !_probe_active &&
+  // Speed-adaptive timing divisor
+  unsigned int td = 1;
+#if ENV_INCLUDE_GPS == 1
+  if (_motion_mode == 2) { td = 2; }        // Bike: always active
+  else if (_motion_mode == 3) { td = 4; }   // Drive: always active
+  else if (_motion_mode == 1) {              // Auto: speed-based
+    LocationProvider* nmea = _sensors->getLocationProvider();
+    if (nmea != NULL && nmea->isValid()) {
+      float speed_mph = nmea->getSpeed() / 1000.0f * 1.15078f;
+      if (speed_mph >= 25.0f) td = 4;
+      else if (speed_mph >= 5.0f) td = 2;
+    }
+  }
+#endif
+
+  // Adaptive signal refresh (sweep every 30s when idle, auto_tx_enabled)
+  // Best repeater: adaptive backoff (30s/60s/120s based on check count)
+  // Others: fixed 120s interval or retry on tx_failed
+  if (_auto_tx_enabled && _auto_ping_queue_count == 0 && !_auto_ping_pending && !_probe_active &&
       _signal_count > 0 && millis() >= _retry_ping_time) {
-    _retry_ping_time = millis() + 60000;
+    _retry_ping_time = millis() + 30000UL / td;
 
     // Find best repeater (same logic as status bar)
     int best = 0;
@@ -6360,21 +6500,43 @@ void UITask::loop() {
       }
     }
 
-    // Queue best first if stale (>60s) or failed
+    // Track best repeater changes — reset backoff when best changes
+    if (_signals[best].id != _best_ping_id) {
+      _best_ping_id = _signals[best].id;
+      _best_ping_count = 0;
+    }
+
+    // Adaptive interval for best: 30s (checks 0-3), 60s (4-7), 120s (8+)
+    unsigned long best_interval = _best_ping_count < 4 ? 30000UL / td : _best_ping_count < 8 ? 60000UL / td : 120000UL / td;
+    // Backoff interval for failed pings: 60s, 120s, then stop retrying
+    unsigned long fail_interval = _signals[best].fail_count < 2 ? 60000UL / td :
+                                  _signals[best].fail_count < 4 ? 120000UL / td : 0UL;
     unsigned long best_age = millis() - _signals[best].last_heard;
-    if (best_age < 300000 &&
-        (_signals[best].tx_failed || (best_age > 60000 && _signals[best].has_tx))) {
-      _signals[best].tx_failed = false;
-      _signals[best].has_tx = false;
-      _auto_ping_queue[_auto_ping_queue_count++] = _signals[best].id;
+    if (best_age < 300000UL / td) {
+      bool retry_failed = _signals[best].tx_failed && fail_interval > 0 &&
+                          (millis() - _signals[best].last_fail_time > fail_interval);
+      bool refresh_stale = best_age > best_interval && _signals[best].has_tx;
+      bool never_checked = !_signals[best].has_tx && !_signals[best].tx_failed;
+      if (retry_failed || refresh_stale || never_checked) {
+        _signals[best].tx_failed = false;
+        _signals[best].has_tx = false;
+        _auto_ping_queue[_auto_ping_queue_count++] = _signals[best].id;
+        _best_ping_count++;
+      }
     }
 
     // Fill remaining slots with other stale (>120s) or failed entries
     for (uint8_t i = 0; i < _signal_count && _auto_ping_queue_count < AUTO_PING_QUEUE_MAX; i++) {
       if (i == best) continue;
       unsigned long age = millis() - _signals[i].last_heard;
-      if (age >= 300000) continue;  // too old, will be pruned
-      if (_signals[i].tx_failed || (age > 120000 && _signals[i].has_tx)) {
+      if (age >= 300000UL / td) continue;  // too old, will be pruned
+      unsigned long fi = _signals[i].fail_count < 2 ? 60000UL / td :
+                         _signals[i].fail_count < 4 ? 120000UL / td : 0UL;
+      bool retry_failed = _signals[i].tx_failed && fi > 0 &&
+                          (millis() - _signals[i].last_fail_time > fi);
+      bool refresh_stale = age > 120000UL / td && _signals[i].has_tx;
+      bool never_checked = !_signals[i].has_tx && !_signals[i].tx_failed;
+      if (retry_failed || refresh_stale || never_checked) {
         _signals[i].tx_failed = false;
         _signals[i].has_tx = false;
         _auto_ping_queue[_auto_ping_queue_count++] = _signals[i].id;
@@ -6390,19 +6552,19 @@ void UITask::loop() {
   // Signal probe completion: discovery scan finished
   if (_probe_active && millis() > _probe_timeout) {
     _probe_active = false;
-    if (_signal_count > 0) {
+    if (_auto_tx_enabled && _signal_count > 0) {
       _auto_ping_next = 0;
       _auto_ping_next_time = millis() + 500;
-    } else {
+    } else if (_signal_count == 0) {
       showAlert("No repeaters found", 1500);
     }
   }
 
   // Auto-trigger signal probe when signal data goes stale (5 min)
-  if (!_probe_active && !_probe_done && _auto_ping_queue_count == 0 &&
+  if (_auto_tx_enabled && !_probe_active && !_probe_done && _auto_ping_queue_count == 0 &&
       _last_rx_time > 0 && !_auto_ping_pending) {
     unsigned long now = millis();
-    if ((now - _signal_time > 300000) && (now - _last_rx_time > 300000)) {
+    if ((now - _signal_time > 300000UL / td) && (now - _last_rx_time > 300000UL / td)) {
       startSignalProbe(false);
     }
   }
