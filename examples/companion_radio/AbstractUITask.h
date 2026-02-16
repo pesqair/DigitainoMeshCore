@@ -99,7 +99,11 @@ public:
     for (int i = 0; i < _signal_count; i++) {
       if (_signals[i].id == first_path_byte) { idx = i; break; }
     }
-    if (idx < 0 && _signal_count < SIGNAL_MAX) {
+    if (idx < 0 && _auto_ping_pending) {
+      // Don't create new entries from packets received during an active ping
+      // (reply may route through a different repeater)
+      return;
+    } else if (idx < 0 && _signal_count < SIGNAL_MAX) {
       idx = _signal_count++;
       _signals[idx].id = first_path_byte;
       _signals[idx].has_tx = false;
@@ -110,6 +114,7 @@ public:
       _signals[idx].last_heard = millis();
       _signals[idx].rx_count = 1;
       _signals[idx].tx_count = 0;
+      _signals[idx].last_rtt_ms = 0;
     } else if (idx < 0) {
       // Array full — evict oldest entry
       int oldest = 0;
@@ -126,6 +131,7 @@ public:
       _signals[idx].last_heard = millis();
       _signals[idx].rx_count = 1;
       _signals[idx].tx_count = 0;
+      _signals[idx].last_rtt_ms = 0;
     } else {
       // Rolling average: 75% old + 25% new
       _signals[idx].rx_snr_x4 = (int8_t)((_signals[idx].rx_snr_x4 * 3 + snr_x4) / 4);

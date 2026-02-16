@@ -65,9 +65,9 @@ Dedicated view of all tracked repeater signal entries, sorted by most recently h
 - **Ping**: Queue an immediate ping to the repeater (clears previous TX data)
 - **Delete**: Remove the signal entry from the list
 
-Detail view shows RX/TX SNR in dB, packet counts, RTT, and age.
+Detail view shows repeater name (if in contacts), RX/TX SNR in dB, packet counts, RTT, and age.
 
-Failed pings are automatically retried every 60 seconds while the entry is still fresh (< 5 minutes old). The best repeater is automatically re-pinged every 2 minutes to keep its signal data fresh and verify reachability.
+Failed pings are automatically retried every 60 seconds while the entry is still fresh (< 5 minutes old). The best repeater is automatically re-pinged every 2 minutes to keep its signal data fresh and verify reachability. New signal entries are suppressed while a ping is in flight to prevent reply routing from creating spurious entries.
 
 ### Packets
 

@@ -2674,9 +2674,14 @@ public:
       if (_sig_action && _task->_signal_count > 0 && _sig_sel < _task->_signal_count) {
         // Action menu for selected signal
         AbstractUITask::SignalEntry& se = _task->_signals[_sig_sel];
-        snprintf(tmp, sizeof(tmp), "<%02X> Signal", se.id);
+        ContactInfo* ci = the_mesh.lookupContactByPubKey(&se.id, 1);
+        if (ci && ci->name[0]) {
+          snprintf(tmp, sizeof(tmp), "<%02X> %s", se.id, ci->name);
+        } else {
+          snprintf(tmp, sizeof(tmp), "<%02X> Signal", se.id);
+        }
         display.setColor(DisplayDriver::YELLOW);
-        display.drawTextCentered(display.width() / 2, TOP_BAR_H, tmp);
+        display.drawTextEllipsized(0, TOP_BAR_H, display.width(), tmp);
 
         const char* items[8];
         bool item_is_action[8];
