@@ -381,6 +381,21 @@ class HomeScreen : public UIScreen {
   uint8_t _sig_action_sel;
   uint8_t _sig_detail_scroll;
 
+  // Interactive status bar
+  enum StatusBarItem : uint8_t {
+    SB_CLOCK, SB_GPS, SB_ENVELOPE, SB_SPEED,
+    SB_SIGNAL, SB_MUTE, SB_BATTERY
+  };
+  struct SBSlot { StatusBarItem type; int x; int w; };
+  #define SB_MAX_SLOTS 7
+  SBSlot _sb_slots[SB_MAX_SLOTS];
+  uint8_t _sb_count = 0;
+  bool _sb_active = false;    // true = user is focused on status bar
+  int8_t _sb_sel = 0;         // which slot is selected (0..count-1)
+  uint8_t _sb_prev_page = 0;  // page before entering status bar
+  bool _sb_prev_active = false; // page_active before entering status bar
+  bool _sb_return = false;    // true = current page was launched from status bar
+
   // Build message filter options by scanning message log for unique channel_idx values and DM contacts
   void rebuildMsgFilters() {
     _msg_filter_count = 1;  // index 0 = "All"
@@ -581,6 +596,9 @@ class HomeScreen : public UIScreen {
   }
 
   void renderStatusBar(DisplayDriver& display) {
+    _sb_count = 0;
+    SBSlot right_tmp[3]; uint8_t rc = 0;
+
     display.setColor(DisplayDriver::GREEN);
     display.setTextSize(1);
 
@@ -588,7 +606,9 @@ class HomeScreen : public UIScreen {
     int right_x = display.width();
 
     // 1. Vertical battery
+    int batt_x_before = right_x;
     right_x = renderVerticalBattery(display, right_x, _task->getBattMilliVolts());
+    right_tmp[rc++] = {SB_BATTERY, right_x, batt_x_before - right_x};
 
     // 2. Mute icon (8x8, shown when buzzer is quiet)
 #ifdef PIN_BUZZER
@@ -596,6 +616,7 @@ class HomeScreen : public UIScreen {
       right_x -= 8;
       display.setColor(DisplayDriver::RED);
       display.drawXbm(right_x, 3, muted_icon, 8, 8);
+      right_tmp[rc++] = {SB_MUTE, right_x, 8};
       right_x -= 2;
     }
 #endif
@@ -604,6 +625,7 @@ class HomeScreen : public UIScreen {
     // Unified layout: AA ▲[BARS] ▼[BARS] [mute][bat]
     // Draw order (right-to-left): RX bars, TX bars, hex ID
     if (_show_snr) {
+      int sig_start = right_x;
       int bars_w = 11;
       int bars_y = 3;
 
@@ -800,31 +822,25 @@ class HomeScreen : public UIScreen {
         display.setCursor(right_x, 3);
         display.print(hex_id);
       } else {
-        // No signal data — draw "no svc" indicator
-        // Empty bar outlines (dots at base) with X overlay
-        int bars_x_start = right_x - 11;
-        right_x = bars_x_start;
+        // No signal data — draw empty bar stubs with horizontal dash
+        right_x -= 11;
+        int bars_x_start = right_x;
         display.setColor(DisplayDriver::LIGHT);
+        // Bar stubs at base (2px wide each, spaced 3px apart)
         for (int b = 0; b < 4; b++) {
           display.fillRect(bars_x_start + b * 3, bars_y + 9, 2, 1);
         }
-        // X slash over the bars
-        display.fillRect(bars_x_start + 1, bars_y + 3, 1, 1);
-        display.fillRect(bars_x_start + 3, bars_y + 5, 1, 1);
-        display.fillRect(bars_x_start + 5, bars_y + 7, 1, 1);
-        display.fillRect(bars_x_start + 7, bars_y + 9, 1, 1);
-        display.fillRect(bars_x_start + 7, bars_y + 3, 1, 1);
-        display.fillRect(bars_x_start + 5, bars_y + 5, 1, 1);
-        display.fillRect(bars_x_start + 3, bars_y + 7, 1, 1);
-        display.fillRect(bars_x_start + 1, bars_y + 9, 1, 1);
-        // "no svc" text
-        right_x -= 2;
-        right_x -= 6 * 6;  // 6 chars * 6px
-        display.setCursor(right_x, 3);
-        display.print("no svc");
+        // Horizontal dash across the middle
+        display.fillRect(bars_x_start, bars_y + 6, 11, 1);
       }
 
+      if (rc < 3) right_tmp[rc++] = {SB_SIGNAL, right_x, sig_start - right_x};
       right_x -= 1;
+    }
+
+    // Append right-zone slots in left-to-right order
+    for (int i = rc - 1; i >= 0; i--) {
+      if (_sb_count < SB_MAX_SLOTS) _sb_slots[_sb_count++] = right_tmp[i];
     }
 
     // === LEFT ZONE (packed from left edge) ===
@@ -835,6 +851,7 @@ class HomeScreen : public UIScreen {
     {
       uint32_t now = _rtc->getCurrentTime();
       if (now > 1577836800) {
+        int clk_x = left_x;
         uint32_t t = now + _gmt_offset * 3600;
         int mins = (t / 60) % 60;
         int hours = (t / 3600) % 24;
@@ -844,13 +861,15 @@ class HomeScreen : public UIScreen {
         display.setCursor(left_x, 3);
         display.print(clk);
         left_x += 5 * 6;  // 5 chars * 6px
+        if (_sb_count < SB_MAX_SLOTS) _sb_slots[_sb_count++] = {SB_CLOCK, clk_x, left_x - clk_x};
       }
     }
 
-    // 2. GPS indicator (satellite icon + sat count or "?")
+    // 2. GPS indicator (satellite icon + sat count, or off icon when disabled)
 #if ENV_INCLUDE_GPS == 1
     {
       bool gps_on = _task->getGPSState();
+      int gps_x = left_x;
       if (gps_on) {
         display.setColor(DisplayDriver::LIGHT);
         display.drawXbm(left_x, 2, sat_icon, 7, 9);
@@ -865,25 +884,38 @@ class HomeScreen : public UIScreen {
         display.setCursor(left_x, 3);
         display.print(gps_num);
         left_x += (int)strlen(gps_num) * 6;
+      } else {
+        display.setColor(DisplayDriver::LIGHT);
+        display.drawXbm(left_x, 2, gps_off_icon, 7, 9);
+        left_x += 8;
       }
+      if (_sb_count < SB_MAX_SLOTS) _sb_slots[_sb_count++] = {SB_GPS, gps_x, left_x - gps_x};
     }
 #endif
 
-    // 3. Envelope + unread count
-    int msg_count = _task->getMsgCount();
-    if (msg_count > 0) {
+    // 3. Envelope (always shown — unread: filled + count, read: open outline)
+    {
+      int msg_count = _task->getMsgCount();
       if (left_x > 0) left_x += 2;
       if (left_x + 9 <= left_max) {
-        display.setColor(DisplayDriver::YELLOW);
-        display.drawXbm(left_x, 3, envelope_icon, 9, 7);
-        left_x += 10;
-        char cnt[6];
-        snprintf(cnt, sizeof(cnt), "%d", msg_count);
-        if (left_x + (int)strlen(cnt) * 6 <= left_max) {
-          display.setCursor(left_x, 3);
-          display.print(cnt);
-          left_x += (int)strlen(cnt) * 6;
+        int env_x = left_x;
+        if (msg_count > 0) {
+          display.setColor(DisplayDriver::YELLOW);
+          display.drawXbm(left_x, 3, envelope_icon, 9, 7);
+          left_x += 10;
+          char cnt[6];
+          snprintf(cnt, sizeof(cnt), "%d", msg_count);
+          if (left_x + (int)strlen(cnt) * 6 <= left_max) {
+            display.setCursor(left_x, 3);
+            display.print(cnt);
+            left_x += (int)strlen(cnt) * 6;
+          }
+        } else {
+          display.setColor(DisplayDriver::LIGHT);
+          display.drawXbm(left_x, 3, envelope_read_icon, 9, 7);
+          left_x += 10;
         }
+        if (_sb_count < SB_MAX_SLOTS) _sb_slots[_sb_count++] = {SB_ENVELOPE, env_x, left_x - env_x};
       }
     }
 
@@ -904,15 +936,27 @@ class HomeScreen : public UIScreen {
           int sw = (int)strlen(spd) * 6;
           if (left_x > 0) left_x += 2;
           if (left_x + sw <= left_max) {
+            int spd_x = left_x;
             display.setColor(DisplayDriver::GREEN);
             display.setCursor(left_x, 3);
             display.print(spd);
             left_x += sw;
+            if (_sb_count < SB_MAX_SLOTS) _sb_slots[_sb_count++] = {SB_SPEED, spd_x, left_x - spd_x};
           }
         }
       }
     }
 #endif
+
+    // Draw focus indicator when status bar is active
+    if (_sb_active && _sb_count > 0) {
+      if (_sb_sel >= _sb_count) _sb_sel = _sb_count - 1;
+      if (_sb_sel >= 0 && _sb_sel < _sb_count) {
+        display.setColor(DisplayDriver::LIGHT);
+        display.fillRect(_sb_slots[_sb_sel].x, 13, _sb_slots[_sb_sel].w, 1);
+        _needs_fast_refresh = true;
+      }
+    }
   }
 
   CayenneLPP sensors_lpp;
@@ -965,6 +1009,7 @@ public:
        _scan_count(0), _scan_active(false), _scan_timeout(0), _scan_tag(0),
        _scan_sel(0), _scan_action(false), _scan_action_sel(0), _scan_action_count(0), _scan_detail_scroll(0),
        _sig_sel(0), _sig_action(false), _sig_action_sel(0), _sig_detail_scroll(0),
+       _sb_count(0), _sb_active(false), _sb_sel(0), _sb_prev_page(0), _sb_prev_active(false), _sb_return(false),
        sensors_lpp(200) { memset(_ct_cache, 0, sizeof(_ct_cache)); memset(_scan_results, 0, sizeof(_scan_results)); }
 
   bool isUserBusy() const {
@@ -973,6 +1018,123 @@ public:
            _ct_ping_pending || _ct_ping_done ||
            _ct_gps_pending || _ct_gps_done || _ct_gps_no_fix ||
            _preset_target_choosing || _preset_edit_mode || _scan_action || _sig_action;
+  }
+
+  bool isInSubState() const {
+    return _msg_detail || _msg_compose_menu || _msg_target_menu || _msg_reply_menu ||
+           _pkt_detail || _ct_action || _ct_path_pending || _ct_telem_pending ||
+           _ct_telem_done || _ct_status_pending || _ct_status_done ||
+           _ct_ping_pending || _ct_ping_done ||
+           _ct_gps_pending || _ct_gps_done || _ct_gps_no_fix ||
+           _preset_target_choosing || _preset_edit_mode || _scan_action || _sig_action;
+  }
+
+  void enterStatusBar() {
+    if (isInSubState()) return;
+    _sb_prev_page = _page;
+    _sb_prev_active = _page_active;
+    _sb_return = false;  // clear: new SB session starts from current location
+    _sb_active = true;
+    _sb_sel = 0;
+  }
+
+  void resetSelToFirst() {
+    switch ((HomePage)_page) {
+      case MESSAGES: _msg_sel = 0; break;
+      case SIGNALS: _sig_sel = 0; break;
+      case SETTINGS: _settings_sel = 0; break;
+      case PRESETS: _preset_sel = 0; break;
+      case TRACE: _ct_sel = 0; break;
+      case PACKETS: _pkt_sel = 0; break;
+      case NEARBY: _scan_sel = 0; break;
+      default: break;
+    }
+  }
+
+  void resetSelToLast() {
+    switch ((HomePage)_page) {
+      case MESSAGES: { int ft = countFilteredMsgs(); _msg_sel = ft > 0 ? ft - 1 : 0; } break;
+      case SIGNALS: _sig_sel = _task->_signal_count > 0 ? _task->_signal_count - 1 : 0; break;
+      case SETTINGS: _settings_sel = countSettings() - 1; break;
+      case PRESETS: _preset_sel = PRESET_MSG_COUNT + 5; break;
+      case TRACE: _ct_sel = _ct_count > 0 ? _ct_count - 1 : 0; break;
+      case PACKETS: _pkt_sel = _task->_pkt_log_count > 0 ? _task->_pkt_log_count - 1 : 0; break;
+      case NEARBY: _scan_sel = _scan_count > 0 ? _scan_count - 1 : 0; break;
+      default: break;
+    }
+  }
+
+  int countSettings() const {
+    int sc = 1 + 1 + 1;  // GMT + Voltage + SNR
+#if ENV_INCLUDE_GPS == 1
+    sc++;  // Speed
+#endif
+    sc += 2;  // Beep + Auto TX
+#if ENV_INCLUDE_GPS == 1
+    sc++;  // Motion
+#endif
+    sc++;  // BLE
+#if ENV_INCLUDE_GPS == 1
+    sc++;  // GPS
+#endif
+    return sc;
+  }
+
+  bool handleStatusBarKey(char c) {
+    if (c == KEY_LEFT) {
+      _sb_sel = _sb_sel > 0 ? _sb_sel - 1 : _sb_count - 1;
+      return true;
+    }
+    if (c == KEY_RIGHT) {
+      _sb_sel = _sb_sel < _sb_count - 1 ? _sb_sel + 1 : 0;
+      return true;
+    }
+    if (c == KEY_DOWN) {
+      _sb_active = false;
+      if (_page_active) resetSelToFirst();
+      return true;
+    }
+    if (c == KEY_UP) {
+      _sb_active = false;
+      if (_page_active) resetSelToLast();
+      return true;
+    }
+    if (c == KEY_CANCEL) {
+      _sb_active = false;
+      return true;
+    }
+    if (c == KEY_ENTER) {
+      activateStatusBarItem();
+      return true;
+    }
+    return true;  // consume all keys while in status bar
+  }
+
+  void activateStatusBarItem() {
+    if (_sb_sel < 0 || _sb_sel >= _sb_count) return;
+    StatusBarItem type = _sb_slots[_sb_sel].type;
+    _sb_active = false;
+
+    switch (type) {
+      case SB_CLOCK:    _page = HomePage::SETTINGS; _page_active = true; _settings_sel = 0; _sb_return = true; break;
+      case SB_GPS:
+        _task->toggleGPS();
+        _sb_active = true;  // stay in status bar so user sees change
+        break;
+      case SB_ENVELOPE: _page = HomePage::MESSAGES; _page_active = true; _msg_sel = 0xFF; _sb_return = true; break;
+      case SB_SPEED:    _page = HomePage::NAV; _page_active = true; _sb_return = true; break;
+      case SB_SIGNAL:   _page = HomePage::SIGNALS; _page_active = true; _sig_sel = 0; _sb_return = true; break;
+      case SB_MUTE:
+        _task->toggleBuzzer();
+        _sb_active = true;  // stay in status bar so user sees change
+        break;
+      case SB_BATTERY:
+        _show_voltage = !_show_voltage;
+        _node_prefs->ui_flags = buildUiFlags();
+        the_mesh.savePrefs();
+        _sb_active = true;  // stay in status bar
+        break;
+    }
   }
 
   void poll() override {
@@ -3565,6 +3727,8 @@ public:
   }
 
   bool handleInput(char c) override {
+    if (_sb_active) return handleStatusBarKey(c);
+
     if (!_page_active) {
       // === LEVEL 1: CAROUSEL NAVIGATION ===
       if (c == KEY_LEFT || c == KEY_PREV) {
@@ -3573,6 +3737,10 @@ public:
       }
       if (c == KEY_NEXT || c == KEY_RIGHT) {
         _page = (_page + 1) % HomePage::Count;
+        return true;
+      }
+      if (c == KEY_UP) {
+        enterStatusBar();
         return true;
       }
       if (c == KEY_ENTER) {
@@ -3584,6 +3752,14 @@ public:
     }
 
     // === LEVEL 2: INSIDE PAGE ===
+
+    // Return from status-bar-launched page: restore previous location
+    if (_sb_return && c == KEY_CANCEL && !isInSubState()) {
+      _page = _sb_prev_page;
+      _page_active = _sb_prev_active;
+      _sb_return = false;
+      return true;
+    }
 
     if (_page == HomePage::TRACE) {
       if (_ct_gps_pending || _ct_gps_done || _ct_gps_no_fix) {
@@ -3875,10 +4051,12 @@ public:
       if (_ct_count > 0) {
         if (c == KEY_UP) {
           if (_ct_sel > 0) _ct_sel--;
+          else enterStatusBar();
           return true;
         }
         if (c == KEY_DOWN) {
           if (_ct_sel < _ct_count - 1) _ct_sel++;
+          else enterStatusBar();
           return true;
         }
         if (c == KEY_ENTER) {
@@ -3891,6 +4069,10 @@ public:
           }
           return true;
         }
+      }
+      if ((c == KEY_UP || c == KEY_DOWN) && _ct_count == 0) {
+        enterStatusBar();
+        return true;
       }
       return false;
     }
@@ -4145,10 +4327,16 @@ public:
       }
       if (c == KEY_UP && _scan_count > 0) {
         if (_scan_sel > 0) _scan_sel--;
+        else enterStatusBar();
         return true;
       }
       if (c == KEY_DOWN && _scan_count > 0) {
         if (_scan_sel < _scan_count - 1) _scan_sel++;
+        else enterStatusBar();
+        return true;
+      }
+      if ((c == KEY_UP || c == KEY_DOWN) && _scan_count == 0) {
+        enterStatusBar();
         return true;
       }
       return false;
@@ -4178,6 +4366,7 @@ public:
               se.fail_count = 0;
               se.has_tx = false;
               _task->_auto_ping_queue[0] = se.id;
+              _task->_manual_ping_id = se.id;
               _task->_auto_ping_queue_count = 1;
               _task->_auto_ping_next = 0;
               _task->_auto_ping_next_time = millis() + 500;
@@ -4213,10 +4402,16 @@ public:
       }
       if (c == KEY_UP && _task->_signal_count > 0) {
         if (_sig_sel > 0) _sig_sel--;
+        else enterStatusBar();
         return true;
       }
       if (c == KEY_DOWN && _task->_signal_count > 0) {
         if (_sig_sel < _task->_signal_count - 1) _sig_sel++;
+        else enterStatusBar();
+        return true;
+      }
+      if ((c == KEY_UP || c == KEY_DOWN) && _task->_signal_count == 0) {
+        enterStatusBar();
         return true;
       }
       return false;
@@ -4628,8 +4823,10 @@ public:
       {
         int filtered_total = countFilteredMsgs();
         if (filtered_total > 0) {
+          if (_msg_sel >= filtered_total) _msg_sel = filtered_total - 1;
           if (c == KEY_UP) {
             if (_msg_sel > 0) _msg_sel--;
+            else enterStatusBar();
             return true;
           }
           if (c == KEY_DOWN) {
@@ -4651,6 +4848,9 @@ public:
             _path_sel = -1;
             return true;
           }
+        } else if (c == KEY_UP) {
+          enterStatusBar();
+          return true;
         } else if (c == KEY_DOWN) {
           // Allow compose from empty message list
           if (_msg_filter > 0) {
@@ -4732,11 +4932,13 @@ public:
       }
       int total_items = PRESET_MSG_COUNT + 6;
       if (c == KEY_UP) {
-        _preset_sel = (_preset_sel + total_items - 1) % total_items;
+        if (_preset_sel > 0) _preset_sel--;
+        else enterStatusBar();
         return true;
       }
       if (c == KEY_DOWN) {
-        _preset_sel = (_preset_sel + 1) % total_items;
+        if (_preset_sel < total_items - 1) _preset_sel++;
+        else enterStatusBar();
         return true;
       }
       if (c == KEY_ENTER) {
@@ -4874,11 +5076,13 @@ public:
           return true;
         }
         if (c == KEY_UP) {
-          _pkt_sel = (_pkt_sel + total - 1) % total;
+          if (_pkt_sel > 0) _pkt_sel--;
+          else enterStatusBar();
           return true;
         }
         if (c == KEY_DOWN) {
-          _pkt_sel = (_pkt_sel + 1) % total;
+          if (_pkt_sel < total - 1) _pkt_sel++;
+          else enterStatusBar();
           return true;
         }
       }
@@ -4913,8 +5117,8 @@ public:
 #endif
       if (_settings_sel >= sc) _settings_sel = sc - 1;
 
-      if (c == KEY_UP && _settings_sel > 0) { _settings_sel--; return true; }
-      if (c == KEY_DOWN && _settings_sel < sc - 1) { _settings_sel++; return true; }
+      if (c == KEY_UP) { if (_settings_sel > 0) _settings_sel--; else enterStatusBar(); return true; }
+      if (c == KEY_DOWN) { if (_settings_sel < sc - 1) _settings_sel++; else enterStatusBar(); return true; }
       // GMT offset: LEFT/RIGHT to adjust
       if (_settings_sel == id_gmt && (c == KEY_LEFT || c == KEY_RIGHT)) {
         if (c == KEY_LEFT && _gmt_offset > -12) _gmt_offset--;
@@ -5598,6 +5802,7 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   _node_prefs = node_prefs;
   _auto_tx_enabled = !(node_prefs->ui_flags & 0x10);
   _motion_mode = (node_prefs->ui_flags >> 5) & 0x03;
+  _discovery_sweep_time = millis() + 30000;  // first sweep 30s after boot
 
 #if ENV_INCLUDE_GPS == 1
   // Apply GPS preferences from stored prefs
@@ -6171,6 +6376,12 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
     _last_rx_id = _auto_ping_current_id;
     _last_rx_snr_x4 = (int8_t)(snr_back * 4);
     _last_rx_time = millis();
+    if (_manual_ping_id == _auto_ping_current_id) {
+      char alert[32];
+      snprintf(alert, sizeof(alert), "Ping %02X: %lums", _auto_ping_current_id, (unsigned long)latency_ms);
+      showAlert(alert, 1200);
+      _manual_ping_id = 0;
+    }
     _auto_ping_next++;
     _auto_ping_next_time = millis() + 1000;
     return;
@@ -6425,6 +6636,10 @@ void UITask::loop() {
               break;
             }
           }
+          if (_manual_ping_id == hash) {
+            showAlert("Ping: FAILED", 1200);
+            _manual_ping_id = 0;
+          }
           _auto_ping_next++;
           _auto_ping_next_time = millis() + 1000;
         }
@@ -6437,6 +6652,10 @@ void UITask::loop() {
             _signals[i].last_fail_time = millis();
             break;
           }
+        }
+        if (_manual_ping_id == hash) {
+          showAlert("Ping: no contact", 1200);
+          _manual_ping_id = 0;
         }
         _auto_ping_next++;
         _auto_ping_next_time = millis() + 500;
@@ -6453,6 +6672,12 @@ void UITask::loop() {
         _signals[i].last_fail_time = millis();
         break;
       }
+    }
+    if (_manual_ping_id == _auto_ping_current_id) {
+      char alert[24];
+      snprintf(alert, sizeof(alert), "Ping %02X: FAILED", _auto_ping_current_id);
+      showAlert(alert, 1200);
+      _manual_ping_id = 0;
     }
     _auto_ping_pending = false;
     _auto_ping_next++;
@@ -6568,6 +6793,15 @@ void UITask::loop() {
       startSignalProbe(false);
     }
   }
+
+  // Periodic discovery while in motion mode (find new repeaters entering range)
+#if ENV_INCLUDE_GPS == 1
+  if (_motion_mode > 0 && _auto_tx_enabled && !_probe_active && !_auto_ping_pending &&
+      _auto_ping_queue_count == 0 && millis() >= _discovery_sweep_time) {
+    startSignalProbe(false);
+    _discovery_sweep_time = millis() + 120000UL / td;
+  }
+#endif
 
 #ifdef PIN_BUZZER
   if (buzzer.isPlaying())  buzzer.loop();

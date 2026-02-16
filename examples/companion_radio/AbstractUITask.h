@@ -91,6 +91,9 @@ public:
   uint8_t _best_ping_id = 0;           // currently tracked best repeater hash
   uint8_t _best_ping_count = 0;        // number of checks since last reset
 
+  uint8_t _manual_ping_id = 0;  // non-zero = waiting for manual ping result from signal detail
+  unsigned long _discovery_sweep_time = 0;  // next periodic discovery while in motion
+
   // Signal probe state
   bool _probe_active = false;        // discovery scan phase in progress
   bool _probe_done = false;          // prevents re-triggering auto-probe until new RX

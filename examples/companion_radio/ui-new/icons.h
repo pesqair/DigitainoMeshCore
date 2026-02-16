@@ -132,15 +132,39 @@ static const uint8_t envelope_icon[] = {
   0xFF, 0x80,  // #########
 };
 
-// 7x9 satellite dish icon for GPS indicator
+// 9x7 open envelope icon for read/no-unread messages (2 bytes per row)
+static const uint8_t envelope_read_icon[] = {
+  0x88, 0x80,  // #...#...#  flap top
+  0x94, 0x80,  // #..#.#..#  flap
+  0xA2, 0x80,  // #.#...#.#  flap
+  0xC1, 0x80,  // ##.....##  flap meets body
+  0x80, 0x80,  // #.......#  body
+  0x80, 0x80,  // #.......#  body
+  0xFF, 0x80,  // #########  bottom
+};
+
+// 7x9 satellite with solar panels icon for GPS indicator
 static const uint8_t sat_icon[] = {
-  0xC0,  // ##.....  signal
-  0x20,  // ..#....  signal
-  0x10,  // ...#...  signal
-  0x3C,  // ..####.  dish top
-  0x7C,  // .#####.  dish wide
-  0x3C,  // ..####.  dish bottom
-  0x10,  // ...#...  pole
-  0x10,  // ...#...  pole
-  0x38,  // ..###..  base
+  0x10,  // ...#...  antenna
+  0x10,  // ...#...  antenna
+  0x38,  // ..###..  body top
+  0xFE,  // #######  panel + body + panel
+  0xBA,  // #.###.#  panel cells + body + panel cells
+  0xFE,  // #######  panel + body + panel
+  0x38,  // ..###..  body bottom
+  0x44,  // .#...#.  signal arcs
+  0x00,  // .......
+};
+
+// 7x9 GPS-off icon (satellite with diagonal line through)
+static const uint8_t gps_off_icon[] = {
+  0x12,  // ...#..#  antenna + slash start
+  0x14,  // ...#.#.  antenna + slash
+  0x38,  // ..###..  body top
+  0xFE,  // #######  panel + body + panel
+  0xBA,  // #.###.#  panel cells + body + panel cells
+  0xFE,  // #######  panel + body + panel
+  0x38,  // ..###..  body bottom
+  0x44,  // .#...#.  signal arcs
+  0x80,  // #......  slash end
 };

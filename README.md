@@ -132,12 +132,19 @@ Power off the device.
 
 Always-visible top bar with three zones:
 
-- **Left zone**: HH:MM clock, GPS satellite icon with satellite count (when GPS is on), envelope icon with unread message count (clears when Messages page is viewed), speed/compass heading (auto-shown when moving)
-- **Right zone**: vertical battery icon (or voltage text if enabled), mute icon (when buzzer is off), signal indicators (when enabled — fades after 5 minutes of inactivity):
+- **Left zone**: HH:MM clock, GPS satellite icon with satellite count (on) or slashed satellite icon (off), envelope icon (closed with unread count, or open outline when no unread), speed/compass heading (auto-shown when moving)
+- **Right zone**: vertical battery icon (or voltage text if enabled), mute icon (when buzzer is off), signal indicators (when enabled — fades after 5 minutes of inactivity; shows bar stubs with horizontal dash when no signal data):
   - **RX (▼)**: Shows how well you hear nearby repeaters. Builds up a picture over time as packets arrive — the reading smooths out rather than jumping on every packet. Always shows the most recently heard repeater.
   - **TX (▲)**: Shows how well repeaters hear you. The device automatically pings repeaters it hears to measure this. Shows `?` while waiting for a response, red `X` if the ping failed, green bars when successful.
   - **Arrow blink**: The ▼ and ▲ arrows blink green briefly when a packet is received or sent.
   - **Signal probe**: Double-click CANCEL to do a full scan for nearby repeaters and ping each one. Also runs automatically if no packets have been heard for 5 minutes (or sooner in motion mode).
+  - **Periodic discovery**: In motion mode, a discovery sweep runs every 120s (normal) / 60s (bike) / 30s (drive) to find new repeaters entering range, even when existing signals are still fresh.
+
+**Interactive status bar** (UP from any page or the carousel):
+- LEFT/RIGHT to select elements, ENTER to activate, CANCEL to return
+- **Clock** → opens Settings page; **GPS icon** → toggles GPS on/off; **Envelope** → opens Messages; **Speed** → opens Navigation; **Signal bars** → opens Signals; **Mute icon** → toggles buzzer; **Battery** → toggles voltage display
+- Activating a page from the status bar remembers your previous location — pressing CANCEL from the launched page returns you to where you were, not the carousel
+- The active element is indicated by an underline at the bottom of the status bar
 
 ## Companion App Sync
 
