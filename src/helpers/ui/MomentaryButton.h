@@ -15,6 +15,7 @@ class MomentaryButton {
   int _long_millis;
   int _threshold;  // analog mode
   unsigned long down_at;
+  unsigned long _last_transition;
   uint8_t _click_count;
   unsigned long _last_click_time;
   int _multi_click_window;
