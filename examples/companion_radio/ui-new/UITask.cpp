@@ -188,11 +188,11 @@ class HomeScreen : public UIScreen {
     MESSAGES,
     PRESETS,
     TRACE,
-    NEARBY,
     RECENT,
+    SIGNALS,
     PACKETS,
     RADIO,
-    ADVERT,
+    NEARBY,
 #if ENV_INCLUDE_GPS == 1
     GPS,
     NAV,
@@ -201,6 +201,7 @@ class HomeScreen : public UIScreen {
     SENSORS,
 #endif
     SETTINGS,
+    ADVERT,
     SHUTDOWN,
     Count    // keep as last
   };
@@ -370,6 +371,11 @@ class HomeScreen : public UIScreen {
   uint8_t _scan_action_sel;
   uint8_t _scan_action_count;
   uint8_t _scan_detail_scroll;
+
+  // Signals page state
+  uint8_t _sig_sel;
+  bool _sig_action;
+  uint8_t _sig_action_sel;
 
   // Build message filter options by scanning message log for unique channel_idx values and DM contacts
   void rebuildMsgFilters() {
@@ -604,6 +610,22 @@ class HomeScreen : public UIScreen {
       bool rx_blink_on = rx_recent ? blink_phase : true;
       bool tx_blink_on = tx_recent ? blink_phase : true;
       if (rx_recent || tx_recent) _needs_fast_refresh = true;
+
+      // Prune stale entries (>5 min since last heard)
+      for (int i = 0; i < _task->_signal_count; ) {
+        if (millis() - _task->_signals[i].last_heard > 300000) {
+          // Shift remaining entries down
+          for (int j = i; j < _task->_signal_count - 1; j++) {
+            _task->_signals[j] = _task->_signals[j + 1];
+          }
+          _task->_signal_count--;
+          if (_task->_signal_cycle >= _task->_signal_count && _task->_signal_count > 0) {
+            _task->_signal_cycle = 0;
+          }
+        } else {
+          i++;
+        }
+      }
 
       bool use_cycling = _task->_signal_count > 0 &&
                          (millis() - _task->_signal_time) / 1000 < 300;
@@ -878,6 +900,7 @@ public:
        _ct_gps_pending(false), _ct_gps_done(false), _ct_gps_no_fix(false),
        _scan_count(0), _scan_active(false), _scan_timeout(0), _scan_tag(0),
        _scan_sel(0), _scan_action(false), _scan_action_sel(0), _scan_action_count(0), _scan_detail_scroll(0),
+       _sig_sel(0), _sig_action(false), _sig_action_sel(0),
        sensors_lpp(200) { memset(_ct_cache, 0, sizeof(_ct_cache)); memset(_scan_results, 0, sizeof(_scan_results)); }
 
   bool isUserBusy() const {
@@ -885,7 +908,7 @@ public:
            _ct_telem_done || _ct_status_pending || _ct_status_done ||
            _ct_ping_pending || _ct_ping_done ||
            _ct_gps_pending || _ct_gps_done || _ct_gps_no_fix ||
-           _preset_target_choosing || _preset_edit_mode || _scan_action;
+           _preset_target_choosing || _preset_edit_mode || _scan_action || _sig_action;
   }
 
   void poll() override {
@@ -1068,6 +1091,12 @@ public:
         case NEARBY: page_title = "Nearby";
           if (_scan_count > 0) { snprintf(summary_buf, sizeof(summary_buf), "%d found", _scan_count); page_summary = summary_buf; }
           else page_summary = "Scan nearby";
+          break;
+        case SIGNALS: page_title = "Signals";
+          if (_task->_signal_count > 0) {
+            snprintf(summary_buf, sizeof(summary_buf), "%d repeaters", _task->_signal_count);
+            page_summary = summary_buf;
+          } else page_summary = "No signals";
           break;
         case RADIO: page_title = "Radio";
           snprintf(summary_buf, sizeof(summary_buf), "%.3f SF%d", _node_prefs->freq, _node_prefs->sf);
@@ -2628,6 +2657,182 @@ public:
           }
         }
       }
+    } else if (_page == HomePage::SIGNALS) {
+      display.setTextSize(1);
+      if (_sig_action && _task->_signal_count > 0 && _sig_sel < _task->_signal_count) {
+        // Action menu for selected signal
+        AbstractUITask::SignalEntry& se = _task->_signals[_sig_sel];
+        snprintf(tmp, sizeof(tmp), "<%02X> Signal", se.id);
+        display.setColor(DisplayDriver::YELLOW);
+        display.drawTextCentered(display.width() / 2, TOP_BAR_H, tmp);
+
+        const char* items[8];
+        bool item_is_action[8];
+        int item_count = 0;
+        items[item_count] = "Ping"; item_is_action[item_count++] = true;
+        items[item_count] = "Delete"; item_is_action[item_count++] = true;
+
+        static char sig_info[4][40];
+        float rx_f = (float)se.rx_snr_x4 / 4.0f;
+        if (se.has_rx) snprintf(sig_info[0], sizeof(sig_info[0]), "RX: %.1f dB", rx_f);
+        else snprintf(sig_info[0], sizeof(sig_info[0]), "RX: ?");
+        items[item_count] = sig_info[0]; item_is_action[item_count++] = false;
+
+        if (se.has_tx) {
+          float tx_f = (float)se.tx_snr_x4 / 4.0f;
+          snprintf(sig_info[1], sizeof(sig_info[1]), "TX: %.1f dB", tx_f);
+        } else if (se.tx_failed) {
+          snprintf(sig_info[1], sizeof(sig_info[1]), "TX: FAILED");
+        } else {
+          snprintf(sig_info[1], sizeof(sig_info[1]), "TX: ?");
+        }
+        items[item_count] = sig_info[1]; item_is_action[item_count++] = false;
+
+        snprintf(sig_info[2], sizeof(sig_info[2]), "Pkts: %u rx / %u tx", se.rx_count, se.tx_count);
+        items[item_count] = sig_info[2]; item_is_action[item_count++] = false;
+
+        unsigned long age_s = (millis() - se.last_heard) / 1000;
+        if (age_s < 60) snprintf(sig_info[3], sizeof(sig_info[3]), "Age: %lus", age_s);
+        else snprintf(sig_info[3], sizeof(sig_info[3]), "Age: %lum", age_s / 60);
+        items[item_count] = sig_info[3]; item_is_action[item_count++] = false;
+
+        if (_sig_action_sel >= 2) _sig_action_sel = 1;
+
+        int y = TOP_BAR_H + 10;
+        for (int i = 0; i < item_count; i++, y += 10) {
+          if (item_is_action[i] && i == _sig_action_sel) {
+            display.setColor(DisplayDriver::YELLOW);
+            display.setCursor(0, y);
+            display.print(">");
+          }
+          display.setColor(item_is_action[i] && i == _sig_action_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+          display.drawTextEllipsized(8, y, display.width() - 8, items[i]);
+        }
+      } else {
+        // Signal list
+        display.setColor(DisplayDriver::YELLOW);
+        snprintf(tmp, sizeof(tmp), "-- Signals (%d) --", _task->_signal_count);
+        display.drawTextCentered(display.width() / 2, TOP_BAR_H, tmp);
+
+        if (_task->_signal_count == 0) {
+          display.setColor(DisplayDriver::LIGHT);
+          display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "No signals yet");
+        } else {
+          // Column positions (fixed so everything aligns)
+          const int col_id   = 8;   // hex ID
+          const int col_rx   = 22;  // RX arrow + bars
+          const int col_tx   = 38;  // TX arrow + bars
+          const int col_cnt  = 55;  // packet counts (rx/tx)
+          const int col_age  = 100; // age
+
+          int visible = 4;
+          int scroll_top = 0;
+          if (_sig_sel >= visible) scroll_top = _sig_sel - visible + 1;
+          if (scroll_top > _task->_signal_count - visible) scroll_top = _task->_signal_count - visible;
+          if (scroll_top < 0) scroll_top = 0;
+
+          int y = TOP_BAR_H + 10;
+          for (int v = scroll_top; v < scroll_top + visible && v < _task->_signal_count; v++, y += 10) {
+            AbstractUITask::SignalEntry& se = _task->_signals[v];
+            bool sel = (v == _sig_sel);
+
+            // Selector
+            if (sel) {
+              display.setColor(DisplayDriver::YELLOW);
+              display.setCursor(0, y);
+              display.print(">");
+            }
+
+            // Hex ID
+            display.setColor(sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+            snprintf(tmp, sizeof(tmp), "%02X", se.id);
+            display.setCursor(col_id, y);
+            display.print(tmp);
+
+            // RX bars: down-arrow + 4 bars
+            int bars_y = y + 1;
+            int bx = col_rx;
+            display.setColor(DisplayDriver::GREEN);
+            // Down arrow ▼
+            display.fillRect(bx, bars_y, 3, 1);
+            display.fillRect(bx + 1, bars_y + 1, 1, 1);
+            bx += 4;
+            if (se.has_rx) {
+              int rx_bars = 0;
+              float rx_snr = (float)se.rx_snr_x4 / 4.0f;
+              if (rx_snr > 10) rx_bars = 4;
+              else if (rx_snr > 5) rx_bars = 3;
+              else if (rx_snr > 0) rx_bars = 2;
+              else if (rx_snr > -10) rx_bars = 1;
+              for (int b = 0; b < 4; b++) {
+                int bh = 2 + b * 2;
+                int bx2 = bx + b * 3;
+                int by2 = bars_y + (8 - bh);
+                if (b < rx_bars) {
+                  display.setColor(DisplayDriver::GREEN);
+                  display.fillRect(bx2, by2, 2, bh);
+                } else {
+                  display.setColor(DisplayDriver::GREEN);
+                  display.fillRect(bx2, bars_y + 7, 2, 1);
+                }
+              }
+            } else {
+              display.setColor(DisplayDriver::LIGHT);
+              display.setCursor(bx + 2, y);
+              display.print("?");
+            }
+
+            // TX bars: up-arrow + 4 bars / X / ?
+            bx = col_tx;
+            display.setColor(DisplayDriver::GREEN);
+            // Up arrow ▲
+            display.fillRect(bx + 1, bars_y, 1, 1);
+            display.fillRect(bx, bars_y + 1, 3, 1);
+            bx += 4;
+            if (se.has_tx) {
+              int tx_bars = 0;
+              float tx_snr = (float)se.tx_snr_x4 / 4.0f;
+              if (tx_snr > 10) tx_bars = 4;
+              else if (tx_snr > 5) tx_bars = 3;
+              else if (tx_snr > 0) tx_bars = 2;
+              else if (tx_snr > -10) tx_bars = 1;
+              for (int b = 0; b < 4; b++) {
+                int bh = 2 + b * 2;
+                int bx2 = bx + b * 3;
+                int by2 = bars_y + (8 - bh);
+                if (b < tx_bars) {
+                  display.setColor(DisplayDriver::GREEN);
+                  display.fillRect(bx2, by2, 2, bh);
+                } else {
+                  display.setColor(DisplayDriver::GREEN);
+                  display.fillRect(bx2, bars_y + 7, 2, 1);
+                }
+              }
+            } else if (se.tx_failed) {
+              display.setColor(DisplayDriver::RED);
+              display.setCursor(bx + 2, y);
+              display.print("X");
+            } else {
+              display.setColor(DisplayDriver::LIGHT);
+              display.setCursor(bx + 2, y);
+              display.print("?");
+            }
+
+            // Packet counts (rx/tx)
+            display.setColor(sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+            snprintf(tmp, sizeof(tmp), "%u/%u", se.rx_count, se.tx_count);
+            display.setCursor(col_cnt, y);
+            display.print(tmp);
+
+            // Age
+            unsigned long age_s = (millis() - se.last_heard) / 1000;
+            if (age_s < 60) snprintf(tmp, sizeof(tmp), "%lus", age_s);
+            else snprintf(tmp, sizeof(tmp), "%lum", age_s / 60);
+            display.setCursor(col_age, y);
+            display.print(tmp);
+          }
+        }
+      }
     } else if (_page == HomePage::RADIO) {
       display.setColor(DisplayDriver::YELLOW);
       display.setTextSize(1);
@@ -3825,6 +4030,70 @@ public:
       }
       if (c == KEY_DOWN && _scan_count > 0) {
         if (_scan_sel < _scan_count - 1) _scan_sel++;
+        return true;
+      }
+      return false;
+    }
+    if (_page == HomePage::SIGNALS) {
+      if (_sig_action) {
+        if (c == KEY_CANCEL) {
+          _sig_action = false;
+          return true;
+        }
+        if (c == KEY_UP) {
+          if (_sig_action_sel > 0) _sig_action_sel--;
+          return true;
+        }
+        if (c == KEY_DOWN) {
+          if (_sig_action_sel < 1) _sig_action_sel++;
+          return true;
+        }
+        if (c == KEY_ENTER) {
+          if (_sig_action_sel == 0) {
+            // Ping
+            if (_task->_auto_ping_queue_count == 0 && !_task->_auto_ping_pending && !_task->_probe_active) {
+              AbstractUITask::SignalEntry& se = _task->_signals[_sig_sel];
+              se.tx_failed = false;
+              se.has_tx = false;
+              _task->_auto_ping_queue[0] = se.id;
+              _task->_auto_ping_queue_count = 1;
+              _task->_auto_ping_next = 0;
+              _task->_auto_ping_next_time = millis() + 500;
+              _task->showAlert("Ping queued", 800);
+            } else {
+              _task->showAlert("Ping busy", 800);
+            }
+            _sig_action = false;
+          } else if (_sig_action_sel == 1) {
+            // Delete
+            for (uint8_t i = _sig_sel; i + 1 < _task->_signal_count; i++) {
+              _task->_signals[i] = _task->_signals[i + 1];
+            }
+            _task->_signal_count--;
+            if (_task->_signal_cycle > 0) _task->_signal_cycle--;
+            if (_sig_sel > 0 && _sig_sel >= _task->_signal_count) _sig_sel = _task->_signal_count - 1;
+            _sig_action = false;
+          }
+          return true;
+        }
+        return true;
+      }
+      // Signal list
+      if (c == KEY_CANCEL) {
+        _page_active = false;
+        return true;
+      }
+      if (c == KEY_ENTER && _task->_signal_count > 0) {
+        _sig_action = true;
+        _sig_action_sel = 0;
+        return true;
+      }
+      if (c == KEY_UP && _task->_signal_count > 0) {
+        if (_sig_sel > 0) _sig_sel--;
+        return true;
+      }
+      if (c == KEY_DOWN && _task->_signal_count > 0) {
+        if (_sig_sel < _task->_signal_count - 1) _sig_sel++;
         return true;
       }
       return false;
@@ -5721,6 +5990,7 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
       if (_signals[i].id == _auto_ping_current_id) {
         _signals[i].tx_snr_x4 = (int8_t)(snr_there * 4);
         _signals[i].has_tx = true;
+        _signals[i].tx_count++;
         break;
       }
     }
@@ -5747,8 +6017,10 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
   _signals[0].id = repeater_id;
   _signals[0].tx_snr_x4 = (int8_t)(snr_there * 4);
   _signals[0].has_tx = true;
+  _signals[0].tx_count = 1;
   _signals[0].rx_snr_x4 = (int8_t)(snr_back * 4);
   _signals[0].has_rx = true;
+  _signals[0].rx_count = 1;
   _signal_count = 1;
   _signal_time = millis();
   _signal_cycle = 0;
@@ -5778,6 +6050,7 @@ void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, 
       _signals[_signal_count].tx_snr_x4 = 0;
       _signals[_signal_count].has_tx = false;
       _signals[_signal_count].tx_failed = false;
+      _signals[_signal_count].last_heard = millis();
       _signal_count++;
       _signal_time = millis();
       _auto_ping_queue[_auto_ping_queue_count++] = id;
@@ -5996,6 +6269,23 @@ void UITask::loop() {
   // Auto-ping queue fully drained — reset so probe can re-trigger
   if (_auto_ping_queue_count > 0 && _auto_ping_next >= _auto_ping_queue_count && !_auto_ping_pending) {
     _auto_ping_queue_count = 0;
+  }
+
+  // Retry failed pings every 60s when idle
+  if (_auto_ping_queue_count == 0 && !_auto_ping_pending && !_probe_active &&
+      millis() >= _retry_ping_time) {
+    _retry_ping_time = millis() + 60000;
+    for (uint8_t i = 0; i < _signal_count && _auto_ping_queue_count < AUTO_PING_QUEUE_MAX; i++) {
+      if (_signals[i].tx_failed && (millis() - _signals[i].last_heard < 300000)) {
+        _signals[i].tx_failed = false;
+        _signals[i].has_tx = false;
+        _auto_ping_queue[_auto_ping_queue_count++] = _signals[i].id;
+      }
+    }
+    if (_auto_ping_queue_count > 0) {
+      _auto_ping_next = 0;
+      _auto_ping_next_time = millis() + 2000;
+    }
   }
 
   // Signal probe completion: discovery scan finished

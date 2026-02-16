@@ -61,6 +61,9 @@ public:
     bool has_rx;         // RX data available
     bool has_tx;         // TX data available (ping succeeded)
     bool tx_failed;      // ping was attempted but failed
+    unsigned long last_heard;  // millis() when last RX'd from this repeater
+    uint16_t rx_count;   // number of packets received from this repeater
+    uint16_t tx_count;   // number of ack'd pings to this repeater
   };
   SignalEntry _signals[SIGNAL_MAX];
   uint8_t _signal_count = 0;
@@ -77,6 +80,7 @@ public:
   unsigned long _auto_ping_timeout = 0; // response timeout
   uint8_t _auto_ping_current_id = 0;    // hash of repeater being pinged
   unsigned long _auto_ping_next_time = 0; // when to send next ping
+  unsigned long _retry_ping_time = 0;  // when to next sweep for failed pings to retry
 
   // Signal probe state
   bool _probe_active = false;        // discovery scan phase in progress
@@ -102,9 +106,30 @@ public:
       _signals[idx].tx_snr_x4 = 0;
       _signals[idx].rx_snr_x4 = snr_x4;
       _signals[idx].has_rx = true;
-    } else if (idx >= 0) {
+      _signals[idx].last_heard = millis();
+      _signals[idx].rx_count = 1;
+      _signals[idx].tx_count = 0;
+    } else if (idx < 0) {
+      // Array full — evict oldest entry
+      int oldest = 0;
+      for (int i = 1; i < _signal_count; i++) {
+        if (_signals[i].last_heard < _signals[oldest].last_heard) oldest = i;
+      }
+      idx = oldest;
+      _signals[idx].id = first_path_byte;
+      _signals[idx].has_tx = false;
+      _signals[idx].tx_failed = false;
+      _signals[idx].tx_snr_x4 = 0;
+      _signals[idx].rx_snr_x4 = snr_x4;
+      _signals[idx].has_rx = true;
+      _signals[idx].last_heard = millis();
+      _signals[idx].rx_count = 1;
+      _signals[idx].tx_count = 0;
+    } else {
       // Rolling average: 75% old + 25% new
       _signals[idx].rx_snr_x4 = (int8_t)((_signals[idx].rx_snr_x4 * 3 + snr_x4) / 4);
+      _signals[idx].last_heard = millis();
+      _signals[idx].rx_count++;
     }
     _signal_time = millis();
 

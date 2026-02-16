@@ -49,19 +49,25 @@ Each contact shows hash prefix (`<XX>`), name, type suffix (`[D]`irect, `[N]` ho
 - **Sensors**: Find Path, Telemetry, Navigate (if GPS available)
 - Cached info displayed below actions: last heard, path/signal, battery, temperature, uptime
 
-**Ping Repeater**: Sends a trace packet to a repeater and measures round-trip time (ms), SNR "there" (how well the repeater heard us), and SNR "back" (how well we heard the repeater). Available for repeater-type contacts in both Contacts and Nearby views.
+**Ping Repeater**: Sends a trace packet to a repeater and measures round-trip time, signal strength in both directions (how well the repeater heard you, and how well you heard the repeater). Available for repeater-type contacts in both Contacts and Nearby views.
 
 All async operations (path discovery, telemetry, status, ping, location requests) show a waiting state with timeout.
-
-### Nearby
-
-Active discovery of nearby repeaters and sensors. Press ENTER to scan; results appear within 8 seconds. Shows discovered nodes with hash prefix, name (or `<XX> ???` if unknown), and SNR.
-
-ENTER on a result opens the action menu (same as Contacts) if the node is in the contact database. Press RIGHT to rescan at any time.
 
 ### Recent
 
 List of recently heard nodes with names and time since last heard.
+
+### Signals
+
+Dedicated view of all tracked repeater signal entries. Each row shows the repeater hex ID, RX signal bars (▼) and TX signal bars (▲) using the same visual style as the status bar, packet counts (rx/tx), and age. Columns are fixed-width so entries stay aligned regardless of missing data. TX column shows green bars when ping succeeded, red `X` when failed, or dim `?` when pending.
+
+**Actions** (ENTER on a signal entry):
+- **Ping**: Queue an immediate ping to the repeater (clears previous TX data)
+- **Delete**: Remove the signal entry from the list
+
+Detail view shows RX/TX SNR in dB, packet counts, and age.
+
+Failed pings are automatically retried every 60 seconds while the entry is still fresh (< 5 minutes old).
 
 ### Packets
 
@@ -71,9 +77,11 @@ Raw packet log showing packet type, first hop, RSSI, SNR, and age. Press ENTER f
 
 Displays current radio configuration: frequency, spreading factor, bandwidth, coding rate, TX power, and noise floor.
 
-### Advert
+### Nearby
 
-Press ENTER to broadcast a mesh advertisement.
+Active discovery of nearby repeaters and sensors. Press ENTER to scan; results appear within 8 seconds. Shows discovered nodes with hash prefix, name (or `<XX> ???` if unknown), and SNR.
+
+ENTER on a result opens the action menu (same as Contacts) if the node is in the contact database. Press RIGHT to rescan at any time.
 
 ### GPS
 
@@ -94,22 +102,34 @@ Live sensor data display (battery voltage, temperature, humidity, pressure, alti
 
 ### Settings
 
-Toggle options: GMT offset (LEFT/RIGHT to adjust -12 to +14, applies to clock and message timestamps), battery voltage display (text instead of icon), signal bars (SNR-based with repeater ID), speed HUD, Bluetooth, and GPS.
+Toggle options: GMT offset (LEFT/RIGHT to adjust -12 to +14, applies to clock and message timestamps), battery voltage display (text instead of icon), signal bars (with repeater ID), speed HUD, Bluetooth, and GPS.
+
+### Advert
+
+Press ENTER to broadcast a mesh advertisement.
 
 ### Hibernate
 
 Power off the device.
 
+## Button Shortcuts
+
+| Action | What it does |
+|--------|-------------|
+| Double-click CANCEL | Signal probe — scans for nearby repeaters and pings each one |
+| Triple-click CANCEL | Toggle buzzer mute |
+| Long-press any button (first 8s after boot) | Enter CLI rescue mode |
+
 ## Status Bar
 
-14px always-visible top bar with three zones:
+Always-visible top bar with three zones:
 
-- **Left zone**: HH:MM clock, GPS satellite dish icon with satellite count (when GPS is on), envelope icon with unread message count (clears when Messages page is viewed), speed/compass heading (auto-shown when moving)
-- **Right zone**: vertical battery icon (or voltage text if enabled), mute icon (when buzzer is off), signal indicators (when enabled — fades after 5 minutes):
-  - **RX** (`▼████XX`): how well we hear repeaters. Accumulates entries for all heard repeaters with a rolling average (75/25 EMA). Cycles through multiple repeaters every 2 seconds.
-  - **TX** (`▲████XX`): how well repeaters hear us. Auto-pings each heard repeater after a 2-second settle delay to get `snr_there`. Shows `?` while ping is pending, red `X` if ping failed, green bars on success.
-  - Arrow blink: ▼ blinks green for 600ms on packet receive, ▲ blinks green for 600ms on packet transmit.
-  - **Signal probe** (double-click CANCEL): runs a discovery scan to find nearby repeaters, then auto-pings each for fresh bidirectional signal data. Shows "Signal probe..." alert. Also auto-triggers after 5 minutes of radio silence.
+- **Left zone**: HH:MM clock, GPS satellite icon with satellite count (when GPS is on), envelope icon with unread message count (clears when Messages page is viewed), speed/compass heading (auto-shown when moving)
+- **Right zone**: vertical battery icon (or voltage text if enabled), mute icon (when buzzer is off), signal indicators (when enabled — fades after 5 minutes of inactivity):
+  - **RX (▼)**: Shows how well you hear nearby repeaters. Builds up a picture over time as packets arrive — the reading smooths out rather than jumping on every packet. If multiple repeaters are heard, cycles through them.
+  - **TX (▲)**: Shows how well repeaters hear you. The device automatically pings repeaters it hears to measure this. Shows `?` while waiting for a response, red `X` if the ping failed, green bars when successful.
+  - **Arrow blink**: The ▼ and ▲ arrows blink green briefly when a packet is received or sent.
+  - **Signal probe**: Double-click CANCEL to do a full scan for nearby repeaters and ping each one. Also runs automatically if no packets have been heard for 5 minutes.
 
 ## Companion App Sync
 
