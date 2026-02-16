@@ -64,6 +64,7 @@ public:
     unsigned long last_heard;  // millis() when last RX'd from this repeater
     uint16_t rx_count;   // number of packets received from this repeater
     uint16_t tx_count;   // number of ack'd pings to this repeater
+    uint32_t last_rtt_ms; // last ping round-trip time in ms (0 = unknown)
   };
   SignalEntry _signals[SIGNAL_MAX];
   uint8_t _signal_count = 0;

@@ -65,7 +65,7 @@ Dedicated view of all tracked repeater signal entries, sorted by most recently h
 - **Ping**: Queue an immediate ping to the repeater (clears previous TX data)
 - **Delete**: Remove the signal entry from the list
 
-Detail view shows RX/TX SNR in dB, packet counts, and age.
+Detail view shows RX/TX SNR in dB, packet counts, RTT, and age.
 
 Failed pings are automatically retried every 60 seconds while the entry is still fresh (< 5 minutes old).
 

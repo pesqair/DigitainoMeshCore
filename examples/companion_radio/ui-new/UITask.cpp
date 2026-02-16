@@ -634,12 +634,25 @@ class HomeScreen : public UIScreen {
                       (millis() - _task->_last_rx_time) / 1000 < 300;
 
       if (use_cycling) {
-        // Show the most recently heard repeater
-        int newest = 0;
+        // Pick best repeater: prioritize bidirectional (has_tx + has_rx), then strongest signal
+        int best = 0;
         for (int i = 1; i < _task->_signal_count; i++) {
-          if (_task->_signals[i].last_heard > _task->_signals[newest].last_heard) newest = i;
+          auto& cur = _task->_signals[i];
+          auto& bst = _task->_signals[best];
+          bool cur_bidi = cur.has_rx && cur.has_tx;
+          bool bst_bidi = bst.has_rx && bst.has_tx;
+          if (cur_bidi && !bst_bidi) {
+            best = i;  // bidirectional beats unidirectional
+          } else if (cur_bidi == bst_bidi) {
+            // Same tier — compare signal strength
+            // For bidi: use weaker of the two (link limited by weakest direction)
+            // For non-bidi: use RX SNR
+            int8_t cur_snr = cur_bidi ? min(cur.rx_snr_x4, cur.tx_snr_x4) : cur.rx_snr_x4;
+            int8_t bst_snr = bst_bidi ? min(bst.rx_snr_x4, bst.tx_snr_x4) : bst.rx_snr_x4;
+            if (cur_snr > bst_snr) best = i;
+          }
         }
-        auto& entry = _task->_signals[newest];
+        auto& entry = _task->_signals[best];
 
         // Compute RX bars from entry
         int rx_bars = 0;
@@ -2671,7 +2684,7 @@ public:
         items[item_count] = "Ping"; item_is_action[item_count++] = true;
         items[item_count] = "Delete"; item_is_action[item_count++] = true;
 
-        static char sig_info[4][40];
+        static char sig_info[5][40];
         float rx_f = (float)se.rx_snr_x4 / 4.0f;
         if (se.has_rx) snprintf(sig_info[0], sizeof(sig_info[0]), "RX: %.1f dB", rx_f);
         else snprintf(sig_info[0], sizeof(sig_info[0]), "RX: ?");
@@ -2690,10 +2703,16 @@ public:
         snprintf(sig_info[2], sizeof(sig_info[2]), "Pkts: %u rx / %u tx", se.rx_count, se.tx_count);
         items[item_count] = sig_info[2]; item_is_action[item_count++] = false;
 
-        unsigned long age_s = (millis() - se.last_heard) / 1000;
-        if (age_s < 60) snprintf(sig_info[3], sizeof(sig_info[3]), "Age: %lus", age_s);
-        else snprintf(sig_info[3], sizeof(sig_info[3]), "Age: %lum", age_s / 60);
+        if (se.last_rtt_ms > 0)
+          snprintf(sig_info[3], sizeof(sig_info[3]), "RTT: %lums", (unsigned long)se.last_rtt_ms);
+        else
+          snprintf(sig_info[3], sizeof(sig_info[3]), "RTT: ?");
         items[item_count] = sig_info[3]; item_is_action[item_count++] = false;
+
+        unsigned long age_s = (millis() - se.last_heard) / 1000;
+        if (age_s < 60) snprintf(sig_info[4], sizeof(sig_info[4]), "Age: %lus", age_s);
+        else snprintf(sig_info[4], sizeof(sig_info[4]), "Age: %lum", age_s / 60);
+        items[item_count] = sig_info[4]; item_is_action[item_count++] = false;
 
         if (_sig_action_sel >= 2) _sig_action_sel = 1;
 
@@ -2733,7 +2752,7 @@ public:
           const int col_tx   = 22;  // TX arrow + bars (matches status bar order)
           const int col_rx   = 38;  // RX arrow + bars
           const int col_cnt  = 55;  // packet counts (rx/tx)
-          const int col_age  = 100; // age
+          const int col_age  = 90;  // age
 
           int visible = 4;
           int scroll_top = 0;
@@ -2835,9 +2854,13 @@ public:
             display.print(tmp);
 
             // Age
-            unsigned long age_s = (millis() - se.last_heard) / 1000;
-            if (age_s < 60) snprintf(tmp, sizeof(tmp), "%lus", age_s);
-            else snprintf(tmp, sizeof(tmp), "%lum", age_s / 60);
+            {
+              unsigned long age_s = (millis() - se.last_heard) / 1000;
+              if (age_s < 60) snprintf(tmp, sizeof(tmp), "%lus", age_s);
+              else if (age_s < 3600) snprintf(tmp, sizeof(tmp), "%lum", age_s / 60);
+              else snprintf(tmp, sizeof(tmp), "%luh", age_s / 3600);
+            }
+            display.setColor(sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
             display.setCursor(col_age, y);
             display.print(tmp);
           }
@@ -6001,6 +6024,7 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
         _signals[i].tx_snr_x4 = (int8_t)(snr_there * 4);
         _signals[i].has_tx = true;
         _signals[i].tx_count++;
+        _signals[i].last_rtt_ms = latency_ms;
         break;
       }
     }
@@ -6028,6 +6052,7 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
   _signals[0].tx_snr_x4 = (int8_t)(snr_there * 4);
   _signals[0].has_tx = true;
   _signals[0].tx_count = 1;
+  _signals[0].last_rtt_ms = latency_ms;
   _signals[0].rx_snr_x4 = (int8_t)(snr_back * 4);
   _signals[0].has_rx = true;
   _signals[0].rx_count = 1;
@@ -6063,6 +6088,7 @@ void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, 
       _signals[_signal_count].last_heard = millis();
       _signals[_signal_count].rx_count = 1;
       _signals[_signal_count].tx_count = 0;
+      _signals[_signal_count].last_rtt_ms = 0;
       _signal_count++;
       _signal_time = millis();
       _auto_ping_queue[_auto_ping_queue_count++] = id;
@@ -6303,7 +6329,7 @@ void UITask::loop() {
   // Signal probe completion: discovery scan finished
   if (_probe_active && millis() > _probe_timeout) {
     _probe_active = false;
-    if (_auto_ping_queue_count > 0) {
+    if (_signal_count > 0) {
       _auto_ping_next = 0;
       _auto_ping_next_time = millis() + 500;
     } else {
