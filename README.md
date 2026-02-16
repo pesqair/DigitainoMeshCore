@@ -67,7 +67,7 @@ Dedicated view of all tracked repeater signal entries, sorted by most recently h
 
 Detail view shows repeater name (if in contacts), RX/TX SNR in dB, packet counts, RTT, and age.
 
-Failed pings are automatically retried every 60 seconds while the entry is still fresh (< 5 minutes old). The best repeater is automatically re-pinged every 2 minutes to keep its signal data fresh and verify reachability. New signal entries are suppressed while a ping is in flight to prevent reply routing from creating spurious entries.
+Signal data is kept fresh by a priority-based refresh sweep every 60 seconds: the best repeater (bidirectional, strongest signal) is re-pinged first if stale (>60s), then remaining entries are refreshed if stale (>120s) or previously failed. The best repeater goes first in the ping queue so if it fails, the next-best is tried immediately. Ping responses update both TX and RX signal data. New signal entries are suppressed while a ping is in flight to prevent reply routing from creating spurious entries.
 
 ### Packets
 

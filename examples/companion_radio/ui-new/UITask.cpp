@@ -6035,7 +6035,15 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
         _signals[i].has_tx = true;
         _signals[i].tx_count++;
         _signals[i].last_rtt_ms = latency_ms;
-        _signals[i].last_heard = millis();  // keep entry alive on successful ping
+        // Update RX from ping reply (snr_back = how well we heard them)
+        if (_signals[i].has_rx) {
+          _signals[i].rx_snr_x4 = (int8_t)((_signals[i].rx_snr_x4 * 3 + (int8_t)(snr_back * 4)) / 4);
+        } else {
+          _signals[i].rx_snr_x4 = (int8_t)(snr_back * 4);
+          _signals[i].has_rx = true;
+        }
+        _signals[i].rx_count++;
+        _signals[i].last_heard = millis();
         break;
       }
     }
@@ -6320,26 +6328,15 @@ void UITask::loop() {
     _auto_ping_queue_count = 0;
   }
 
-  // Retry failed pings every 60s when idle
+  // Priority-based signal refresh (every 60s when idle)
+  // Best repeater: re-ping every 60s to keep fresh
+  // Others: re-ping every 120s or retry if failed
+  // Best goes first in queue so it gets priority; if it fails, queue
+  // naturally falls through to the next entries
   if (_auto_ping_queue_count == 0 && !_auto_ping_pending && !_probe_active &&
-      millis() >= _retry_ping_time) {
+      _signal_count > 0 && millis() >= _retry_ping_time) {
     _retry_ping_time = millis() + 60000;
-    for (uint8_t i = 0; i < _signal_count && _auto_ping_queue_count < AUTO_PING_QUEUE_MAX; i++) {
-      if (_signals[i].tx_failed && (millis() - _signals[i].last_heard < 300000)) {
-        _signals[i].tx_failed = false;
-        _signals[i].has_tx = false;
-        _auto_ping_queue[_auto_ping_queue_count++] = _signals[i].id;
-      }
-    }
-    if (_auto_ping_queue_count > 0) {
-      _auto_ping_next = 0;
-      _auto_ping_next_time = millis() + 2000;
-    }
-  }
 
-  // Re-ping best repeater when its data gets stale (>2 min) to keep it alive
-  if (_auto_ping_queue_count == 0 && !_auto_ping_pending && !_probe_active &&
-      _signal_count > 0) {
     // Find best repeater (same logic as status bar)
     int best = 0;
     for (int i = 1; i < _signal_count; i++) {
@@ -6353,10 +6350,29 @@ void UITask::loop() {
         if (cur_snr > bst_snr) best = i;
       }
     }
-    if (_signals[best].has_tx && millis() - _signals[best].last_heard > 120000) {
-      _signals[best].has_tx = false;  // clear so it shows '?' while pinging
-      _auto_ping_queue[0] = _signals[best].id;
-      _auto_ping_queue_count = 1;
+
+    // Queue best first if stale (>60s) or failed
+    unsigned long best_age = millis() - _signals[best].last_heard;
+    if (best_age < 300000 &&
+        (_signals[best].tx_failed || (best_age > 60000 && _signals[best].has_tx))) {
+      _signals[best].tx_failed = false;
+      _signals[best].has_tx = false;
+      _auto_ping_queue[_auto_ping_queue_count++] = _signals[best].id;
+    }
+
+    // Fill remaining slots with other stale (>120s) or failed entries
+    for (uint8_t i = 0; i < _signal_count && _auto_ping_queue_count < AUTO_PING_QUEUE_MAX; i++) {
+      if (i == best) continue;
+      unsigned long age = millis() - _signals[i].last_heard;
+      if (age >= 300000) continue;  // too old, will be pruned
+      if (_signals[i].tx_failed || (age > 120000 && _signals[i].has_tx)) {
+        _signals[i].tx_failed = false;
+        _signals[i].has_tx = false;
+        _auto_ping_queue[_auto_ping_queue_count++] = _signals[i].id;
+      }
+    }
+
+    if (_auto_ping_queue_count > 0) {
       _auto_ping_next = 0;
       _auto_ping_next_time = millis() + 500;
     }
