@@ -86,7 +86,7 @@ public:
   struct MessageLogEntry {
     uint32_t timestamp;
     char origin[24];
-    char text[80];
+    char text[164];
     bool is_sent;
     uint8_t path_len;     // hops: 0=direct/self, 0xFF=DM, else=flood hops
     int channel_idx;      // >=0 = channel msg (reply on this channel), -1 = DM

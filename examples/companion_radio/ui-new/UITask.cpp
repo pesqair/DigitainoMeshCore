@@ -872,8 +872,8 @@ class HomeScreen : public UIScreen {
       int gps_x = left_x;
       if (gps_on) {
         display.setColor(DisplayDriver::LIGHT);
-        display.drawXbm(left_x, 2, sat_icon, 7, 9);
-        left_x += 8;
+        display.drawXbm(left_x, 3, sat_icon, 8, 8);
+        left_x += 9;
         LocationProvider* nmea = sensors.getLocationProvider();
         char gps_num[4];
         if (nmea == NULL || !nmea->isValid()) {
@@ -886,8 +886,8 @@ class HomeScreen : public UIScreen {
         left_x += (int)strlen(gps_num) * 6;
       } else {
         display.setColor(DisplayDriver::LIGHT);
-        display.drawXbm(left_x, 2, gps_off_icon, 7, 9);
-        left_x += 8;
+        display.drawXbm(left_x, 3, gps_off_icon, 8, 8);
+        left_x += 9;
       }
       if (_sb_count < SB_MAX_SLOTS) _sb_slots[_sb_count++] = {SB_GPS, gps_x, left_x - gps_x};
     }
@@ -897,12 +897,12 @@ class HomeScreen : public UIScreen {
     {
       int msg_count = _task->getMsgCount();
       if (left_x > 0) left_x += 2;
-      if (left_x + 9 <= left_max) {
+      if (left_x + 7 <= left_max) {
         int env_x = left_x;
         if (msg_count > 0) {
           display.setColor(DisplayDriver::YELLOW);
-          display.drawXbm(left_x, 3, envelope_icon, 9, 7);
-          left_x += 10;
+          display.drawXbm(left_x, 5, envelope_icon, 7, 5);
+          left_x += 8;
           char cnt[6];
           snprintf(cnt, sizeof(cnt), "%d", msg_count);
           if (left_x + (int)strlen(cnt) * 6 <= left_max) {
@@ -912,8 +912,8 @@ class HomeScreen : public UIScreen {
           }
         } else {
           display.setColor(DisplayDriver::LIGHT);
-          display.drawXbm(left_x, 3, envelope_read_icon, 9, 7);
-          left_x += 10;
+          display.drawXbm(left_x, 5, envelope_read_icon, 7, 5);
+          left_x += 8;
         }
         if (_sb_count < SB_MAX_SLOTS) _sb_slots[_sb_count++] = {SB_ENVELOPE, env_x, left_x - env_x};
       }
@@ -1385,7 +1385,7 @@ public:
         auto& entry = _task->_msg_log[buf_idx];
 
         // Build detail items: Message text lines, separator, then metadata
-        char detail_items[20][48];
+        char detail_items[28][48];
         uint8_t detail_count = 0;
 
         // Full message text, word-wrapped
@@ -1394,12 +1394,12 @@ public:
           if (chars_per_line > 46) chars_per_line = 46;
           if (chars_per_line < 10) chars_per_line = 10;
           // Filter the text for display (replace multi-byte UTF-8 with blocks)
-          char filtered_text[82];
+          char filtered_text[168];
           display.translateUTF8ToBlocks(filtered_text, entry.text, sizeof(filtered_text));
           const char* src = filtered_text;
           int src_len = strlen(src);
           int pos = 0;
-          while (pos < src_len && detail_count < 8) {  // max 8 lines for message
+          while (pos < src_len && detail_count < 16) {  // max 16 lines for message
             // Find how much fits on this line
             int line_end = pos + chars_per_line;
             if (line_end >= src_len) {
@@ -2140,7 +2140,7 @@ public:
 
         int y = TOP_BAR_H + 10;
         for (int i = scroll_top; i < scroll_top + visible && i < total_items; i++, y += 10) {
-          if (i == _preset_sel) {
+          if (i == _preset_sel && !_sb_active) {
             display.setColor(DisplayDriver::YELLOW);
             display.setCursor(0, y);
             display.print(">");
@@ -2519,7 +2519,7 @@ public:
           for (int v = scroll_top; v < scroll_top + visible && v < _ct_count; v++, y += 10) {
             ContactInfo ci;
             if (the_mesh.getContactByIdx(_ct_sorted[v], ci)) {
-              if (v == _ct_sel) {
+              if (v == _ct_sel && !_sb_active) {
                 display.setColor(DisplayDriver::YELLOW);
                 display.setCursor(0, y);
                 display.print(">");
@@ -2864,7 +2864,7 @@ public:
           int y = TOP_BAR_H + 10;
           for (int v = scroll_top; v < scroll_top + visible && v < _scan_count; v++, y += 10) {
             ScanResult& sr = _scan_results[v];
-            if (v == _scan_sel) {
+            if (v == _scan_sel && !_sb_active) {
               display.setColor(DisplayDriver::YELLOW);
               display.setCursor(0, y);
               display.print(">");
@@ -2998,8 +2998,8 @@ public:
             AbstractUITask::SignalEntry& se = _task->_signals[v];
             bool sel = (v == _sig_sel);
 
-            // Selector
-            if (sel) {
+            // Selector (hidden when status bar is focused)
+            if (sel && !_sb_active) {
               display.setColor(DisplayDriver::YELLOW);
               display.setCursor(0, y);
               display.print(">");
@@ -3272,7 +3272,7 @@ public:
             if (age_s < 60) { snprintf(age_buf, sizeof(age_buf), "%lus", age_s); _needs_fast_refresh = true; }
             else if (age_s < 3600) snprintf(age_buf, sizeof(age_buf), "%lum", age_s / 60);
             else snprintf(age_buf, sizeof(age_buf), "%luh", age_s / 3600);
-            char marker = (item == _pkt_sel) ? '>' : ' ';
+            char marker = (item == _pkt_sel && !_sb_active) ? '>' : ' ';
             snprintf(tmp, sizeof(tmp), "%c%s %02X %d/%.1f %s", marker, type_str, pkt.first_hop, pkt.rssi, snr_f, age_buf);
             display.setColor(item == _pkt_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
             display.setCursor(0, y);
@@ -3691,7 +3691,7 @@ public:
       for (int i = scroll; i < scroll + visible && i < sc; i++, y += 10) {
         bool selected = (i == _settings_sel);
         display.setColor(selected ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
-        if (selected) {
+        if (selected && !_sb_active) {
           display.setCursor(0, y);
           display.print(">");
         }
@@ -3746,6 +3746,16 @@ public:
       if (c == KEY_ENTER) {
         if (_page == HomePage::FIRST) return true;  // Home dashboard shown directly, no level 2
         _page_active = true;
+        // Reset page state on entry from carousel
+        if (_page == HomePage::MESSAGES) {
+          _msg_sel = 0xFF;  // clamp to newest on render
+          _msg_sel_prev = 0xFF;
+          _msg_scroll_px = 0;
+          _msg_vscroll = 0;
+          _msg_compose_menu = false;
+          _msg_target_menu = false;
+          _msg_detail = false;
+        }
         return true;
       }
       return false;
@@ -5893,17 +5903,8 @@ void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, i
   // For channel msgs (channel_idx>=0), from_name is the channel name
   const char* dm_contact = (channel_idx < 0) ? from_name : NULL;
   addToMsgLog(from_name, text, false, path_len, channel_idx, dm_contact, path);
-  ((MsgPreviewScreen *) msg_preview)->addPreview(path_len, from_name, text);
-
-  // Don't interrupt user if they're composing/selecting contacts/channels
-  // or in an interactive sub-state on the home screen
-  bool user_busy = (curr == compose || curr == contact_select || curr == channel_select);
-  if (!user_busy && curr == home) {
-    user_busy = ((HomeScreen*)home)->isUserBusy();
-  }
-  if (!user_busy) {
-    setCurrScreen(msg_preview);
-  }
+  // Don't switch screens — just update unread count (shown in envelope icon)
+  // User navigates to Messages themselves via status bar shortcut or carousel
 
   if (_display != NULL) {
     if (!_display->isOn() && !hasConnection()) {
@@ -6140,10 +6141,8 @@ void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uin
   memset(entry.repeat_path_rssi, 0, sizeof(entry.repeat_path_rssi));
   memset(entry.repeat_path_snr_x4, 0, sizeof(entry.repeat_path_snr_x4));
   entry.tx_count = 1;
-  // Clear signal displays and auto-ping queue for new message tracking
+  // Cancel any in-flight auto-ping when sending (don't wipe signal entries)
   if (is_sent) {
-    _signal_count = 0;
-    _signal_cycle = 0;
     _auto_ping_queue_count = 0;
     _auto_ping_next = 0;
     _auto_ping_pending = false;
@@ -6239,25 +6238,35 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
           }
         }
       }
-      // Populate unified signal entries with RX data from retransmissions
-      _signal_count = 0;
-      for (int r = 0; r < entry.repeat_path_len && _signal_count < SIGNAL_MAX; r++) {
-        if (entry.repeat_path_snr_x4[r] != 0) {
-          _signals[_signal_count].id = entry.repeat_path[r];
-          _signals[_signal_count].rx_snr_x4 = entry.repeat_path_snr_x4[r];
-          _signals[_signal_count].has_rx = true;
-          _signals[_signal_count].has_tx = false;  // pending auto-ping
-          _signals[_signal_count].tx_failed = false;
-          _signals[_signal_count].tx_snr_x4 = 0;
-          _signals[_signal_count].fail_count = 0;
-          _signals[_signal_count].last_fail_time = 0;
-          _signal_count++;
+      // Merge retransmission RX data into existing signal entries
+      for (int r = 0; r < entry.repeat_path_len; r++) {
+        if (entry.repeat_path_snr_x4[r] == 0) continue;
+        uint8_t rid = entry.repeat_path[r];
+        int idx = -1;
+        for (int s = 0; s < _signal_count; s++) {
+          if (_signals[s].id == rid) { idx = s; break; }
+        }
+        if (idx < 0 && _signal_count < SIGNAL_MAX) {
+          idx = _signal_count++;
+          _signals[idx].id = rid;
+          _signals[idx].has_tx = false;
+          _signals[idx].tx_failed = false;
+          _signals[idx].tx_snr_x4 = 0;
+          _signals[idx].rx_count = 0;
+          _signals[idx].tx_count = 0;
+          _signals[idx].last_rtt_ms = 0;
+          _signals[idx].fail_count = 0;
+          _signals[idx].last_fail_time = 0;
+        }
+        if (idx >= 0) {
+          _signals[idx].rx_snr_x4 = entry.repeat_path_snr_x4[r];
+          _signals[idx].has_rx = true;
+          _signals[idx].last_heard = millis();
+          _signals[idx].rx_count++;
         }
       }
       if (_signal_count > 0) {
         _signal_time = millis();
-        _signal_cycle = 0;
-        _signal_cycle_time = millis();
       }
       // Add heard repeaters to auto-ping queue (accumulate, don't reset in-flight pings)
       bool was_empty = (_auto_ping_queue_count == 0);
@@ -6911,11 +6920,10 @@ void UITask::startSignalProbe(bool manual) {
   _probe_timeout = millis() + 8000;
   _probe_done = true;
 
-  // Reset signal + auto-ping state for fresh results
-  _signal_count = 0;
-  _signal_cycle = 0;
+  // Cancel in-flight pings (don't wipe signal entries — new discoveries merge in)
   _auto_ping_queue_count = 0;
   _auto_ping_next = 0;
+  _auto_ping_pending = false;
 
   if (manual) {
     showAlert("Signal probe...", 2000);

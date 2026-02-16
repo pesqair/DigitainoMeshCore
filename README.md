@@ -26,7 +26,7 @@ Scrollable message log with channel filtering (LEFT/RIGHT to cycle filters). Mes
 - After sending, the message list scrolls to the latest message and returns to the matching filter tab
 
 **Message Detail** (ENTER on a message):
-- Full word-wrapped text, timestamp, sender/recipient, hop count
+- Full word-wrapped text (up to 160 characters), timestamp, sender/recipient, hop count
 - Signal info (RSSI and SNR) for received messages
 - Path chain with per-repeater selection (LEFT/RIGHT to highlight individual hops)
 - Sent message tracking: repeat count, heard-by repeater list with per-repeater signal
@@ -67,7 +67,7 @@ Dedicated view of all tracked repeater signal entries, sorted by most recently h
 
 Detail view shows repeater name (if in contacts), RX/TX SNR in dB, packet counts, RTT, and age. Scrollable with UP/DOWN to see all details.
 
-Signal data is kept fresh by a priority-based refresh sweep every 60 seconds: the best repeater (bidirectional, strongest signal) is re-pinged first if stale (>60s), then remaining entries are refreshed if stale (>120s) or previously failed. The best repeater goes first in the ping queue so if it fails, the next-best is tried immediately. Ping responses update both TX and RX signal data. New signal entries are suppressed while a ping is in flight to prevent reply routing from creating spurious entries.
+Signal data is kept fresh by a priority-based refresh sweep every 60 seconds: the best repeater (bidirectional, strongest signal) is re-pinged first if stale (>60s), then remaining entries are refreshed if stale (>120s) or previously failed. The best repeater goes first in the ping queue so if it fails, the next-best is tried immediately. Ping responses update both TX and RX signal data. New signal entries are suppressed while a ping is in flight to prevent reply routing from creating spurious entries. Signal entries persist across message sends and probes — new data merges into existing entries rather than replacing them. Manual pings from the detail view show a visible alert with round-trip time or failure status.
 
 ### Packets
 
@@ -132,7 +132,7 @@ Power off the device.
 
 Always-visible top bar with three zones:
 
-- **Left zone**: HH:MM clock, GPS satellite icon with satellite count (on) or slashed satellite icon (off), envelope icon (closed with unread count, or open outline when no unread), speed/compass heading (auto-shown when moving)
+- **Left zone**: HH:MM clock, GPS satellite icon (bold filled satellite with count when on, outlined/hollow satellite when off), envelope icon (closed with unread count, or open outline when no unread), speed/compass heading (auto-shown when moving)
 - **Right zone**: vertical battery icon (or voltage text if enabled), mute icon (when buzzer is off), signal indicators (when enabled — fades after 5 minutes of inactivity; shows bar stubs with horizontal dash when no signal data):
   - **RX (▼)**: Shows how well you hear nearby repeaters. Builds up a picture over time as packets arrive — the reading smooths out rather than jumping on every packet. Always shows the most recently heard repeater.
   - **TX (▲)**: Shows how well repeaters hear you. The device automatically pings repeaters it hears to measure this. Shows `?` while waiting for a response, red `X` if the ping failed, green bars when successful.
@@ -152,7 +152,7 @@ This firmware is compatible with the official MeshCore companion apps (iOS/Andro
 
 - Channel messages sent from the app appear in the device message log (with repeat tracking)
 - DMs sent from the app appear in the device message log (retries collapse with updated TX count)
-- All received messages appear on both simultaneously
+- All received messages appear on both simultaneously (device shows notification via envelope icon, no screen interruption)
 - Channel messages sent from the device are queued to the app's offline queue
 - DMs sent from the device do **not** sync to the app (no outgoing flag in the protocol)
 
