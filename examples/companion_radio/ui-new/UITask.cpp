@@ -634,13 +634,12 @@ class HomeScreen : public UIScreen {
                       (millis() - _task->_last_rx_time) / 1000 < 300;
 
       if (use_cycling) {
-        _needs_fast_refresh = true;
-        // Advance cycle every 2s
-        if (_task->_signal_count > 1 && millis() - _task->_signal_cycle_time > 2000) {
-          _task->_signal_cycle = (_task->_signal_cycle + 1) % _task->_signal_count;
-          _task->_signal_cycle_time = millis();
+        // Show the most recently heard repeater
+        int newest = 0;
+        for (int i = 1; i < _task->_signal_count; i++) {
+          if (_task->_signals[i].last_heard > _task->_signals[newest].last_heard) newest = i;
         }
-        auto& entry = _task->_signals[_task->_signal_cycle];
+        auto& entry = _task->_signals[newest];
 
         // Compute RX bars from entry
         int rx_bars = 0;
@@ -2718,10 +2717,21 @@ public:
           display.setColor(DisplayDriver::LIGHT);
           display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "No signals yet");
         } else {
+          // Sort by most recently heard (youngest first)
+          for (int i = 1; i < _task->_signal_count; i++) {
+            AbstractUITask::SignalEntry tmp_se = _task->_signals[i];
+            int j = i - 1;
+            while (j >= 0 && _task->_signals[j].last_heard < tmp_se.last_heard) {
+              _task->_signals[j + 1] = _task->_signals[j];
+              j--;
+            }
+            _task->_signals[j + 1] = tmp_se;
+          }
+
           // Column positions (fixed so everything aligns)
           const int col_id   = 8;   // hex ID
-          const int col_rx   = 22;  // RX arrow + bars
-          const int col_tx   = 38;  // TX arrow + bars
+          const int col_tx   = 22;  // TX arrow + bars (matches status bar order)
+          const int col_rx   = 38;  // RX arrow + bars
           const int col_cnt  = 55;  // packet counts (rx/tx)
           const int col_age  = 100; // age
 
@@ -2749,41 +2759,9 @@ public:
             display.setCursor(col_id, y);
             display.print(tmp);
 
-            // RX bars: down-arrow + 4 bars
+            // TX bars: up-arrow + 4 bars / X / ? (drawn first, matching status bar order)
             int bars_y = y + 1;
-            int bx = col_rx;
-            display.setColor(DisplayDriver::GREEN);
-            // Down arrow ▼
-            display.fillRect(bx, bars_y, 3, 1);
-            display.fillRect(bx + 1, bars_y + 1, 1, 1);
-            bx += 4;
-            if (se.has_rx) {
-              int rx_bars = 0;
-              float rx_snr = (float)se.rx_snr_x4 / 4.0f;
-              if (rx_snr > 10) rx_bars = 4;
-              else if (rx_snr > 5) rx_bars = 3;
-              else if (rx_snr > 0) rx_bars = 2;
-              else if (rx_snr > -10) rx_bars = 1;
-              for (int b = 0; b < 4; b++) {
-                int bh = 2 + b * 2;
-                int bx2 = bx + b * 3;
-                int by2 = bars_y + (8 - bh);
-                if (b < rx_bars) {
-                  display.setColor(DisplayDriver::GREEN);
-                  display.fillRect(bx2, by2, 2, bh);
-                } else {
-                  display.setColor(DisplayDriver::GREEN);
-                  display.fillRect(bx2, bars_y + 7, 2, 1);
-                }
-              }
-            } else {
-              display.setColor(DisplayDriver::LIGHT);
-              display.setCursor(bx + 2, y);
-              display.print("?");
-            }
-
-            // TX bars: up-arrow + 4 bars / X / ?
-            bx = col_tx;
+            int bx = col_tx;
             display.setColor(DisplayDriver::GREEN);
             // Up arrow ▲
             display.fillRect(bx + 1, bars_y, 1, 1);
@@ -2812,6 +2790,38 @@ public:
               display.setColor(DisplayDriver::RED);
               display.setCursor(bx + 2, y);
               display.print("X");
+            } else {
+              display.setColor(DisplayDriver::LIGHT);
+              display.setCursor(bx + 2, y);
+              display.print("?");
+            }
+
+            // RX bars: down-arrow + 4 bars
+            bx = col_rx;
+            display.setColor(DisplayDriver::GREEN);
+            // Down arrow ▼
+            display.fillRect(bx, bars_y, 3, 1);
+            display.fillRect(bx + 1, bars_y + 1, 1, 1);
+            bx += 4;
+            if (se.has_rx) {
+              int rx_bars = 0;
+              float rx_snr = (float)se.rx_snr_x4 / 4.0f;
+              if (rx_snr > 10) rx_bars = 4;
+              else if (rx_snr > 5) rx_bars = 3;
+              else if (rx_snr > 0) rx_bars = 2;
+              else if (rx_snr > -10) rx_bars = 1;
+              for (int b = 0; b < 4; b++) {
+                int bh = 2 + b * 2;
+                int bx2 = bx + b * 3;
+                int by2 = bars_y + (8 - bh);
+                if (b < rx_bars) {
+                  display.setColor(DisplayDriver::GREEN);
+                  display.fillRect(bx2, by2, 2, bh);
+                } else {
+                  display.setColor(DisplayDriver::GREEN);
+                  display.fillRect(bx2, bars_y + 7, 2, 1);
+                }
+              }
             } else {
               display.setColor(DisplayDriver::LIGHT);
               display.setCursor(bx + 2, y);
@@ -6051,6 +6061,8 @@ void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, 
       _signals[_signal_count].has_tx = false;
       _signals[_signal_count].tx_failed = false;
       _signals[_signal_count].last_heard = millis();
+      _signals[_signal_count].rx_count = 1;
+      _signals[_signal_count].tx_count = 0;
       _signal_count++;
       _signal_time = millis();
       _auto_ping_queue[_auto_ping_queue_count++] = id;

@@ -59,7 +59,7 @@ List of recently heard nodes with names and time since last heard.
 
 ### Signals
 
-Dedicated view of all tracked repeater signal entries. Each row shows the repeater hex ID, RX signal bars (▼) and TX signal bars (▲) using the same visual style as the status bar, packet counts (rx/tx), and age. Columns are fixed-width so entries stay aligned regardless of missing data. TX column shows green bars when ping succeeded, red `X` when failed, or dim `?` when pending.
+Dedicated view of all tracked repeater signal entries, sorted by most recently heard (youngest at top). Each row shows the repeater hex ID, TX signal bars (▲) and RX signal bars (▼) using the same visual style as the status bar, packet counts (rx/tx), and age. Columns are fixed-width so entries stay aligned regardless of missing data. TX column shows green bars when ping succeeded, red `X` when failed, or dim `?` when pending.
 
 **Actions** (ENTER on a signal entry):
 - **Ping**: Queue an immediate ping to the repeater (clears previous TX data)
@@ -126,7 +126,7 @@ Always-visible top bar with three zones:
 
 - **Left zone**: HH:MM clock, GPS satellite icon with satellite count (when GPS is on), envelope icon with unread message count (clears when Messages page is viewed), speed/compass heading (auto-shown when moving)
 - **Right zone**: vertical battery icon (or voltage text if enabled), mute icon (when buzzer is off), signal indicators (when enabled — fades after 5 minutes of inactivity):
-  - **RX (▼)**: Shows how well you hear nearby repeaters. Builds up a picture over time as packets arrive — the reading smooths out rather than jumping on every packet. If multiple repeaters are heard, cycles through them.
+  - **RX (▼)**: Shows how well you hear nearby repeaters. Builds up a picture over time as packets arrive — the reading smooths out rather than jumping on every packet. Always shows the most recently heard repeater.
   - **TX (▲)**: Shows how well repeaters hear you. The device automatically pings repeaters it hears to measure this. Shows `?` while waiting for a response, red `X` if the ping failed, green bars when successful.
   - **Arrow blink**: The ▼ and ▲ arrows blink green briefly when a packet is received or sent.
   - **Signal probe**: Double-click CANCEL to do a full scan for nearby repeaters and ping each one. Also runs automatically if no packets have been heard for 5 minutes.
