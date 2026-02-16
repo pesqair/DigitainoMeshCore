@@ -59,7 +59,7 @@ List of recently heard nodes with names and time since last heard.
 
 ### Signals
 
-Dedicated view of all tracked repeater signal entries, sorted by most recently heard (youngest at top). Each row shows the repeater hex ID, TX signal bars (▲) and RX signal bars (▼) using the same visual style as the status bar, packet counts (rx/tx), and age. Columns are fixed-width so entries stay aligned regardless of missing data. TX column shows green bars when ping succeeded, red `X` when failed, or dim `?` when pending.
+Dedicated view of all tracked repeater signal entries, sorted by most recently heard (youngest at top). Each row shows the repeater hex ID, TX signal bars (▲) and RX signal bars (▼) using the same visual style as the status bar, packet counts (rx/tx), and age. Columns are fixed-width so entries stay aligned regardless of missing data. TX column shows green bars when ping succeeded, red `X` when failed, or flashing `?` when a ping is in flight (steady `?` when idle/unknown).
 
 **Actions** (ENTER on a signal entry):
 - **Ping**: Queue an immediate ping to the repeater (clears previous TX data)
@@ -67,7 +67,7 @@ Dedicated view of all tracked repeater signal entries, sorted by most recently h
 
 Detail view shows RX/TX SNR in dB, packet counts, RTT, and age.
 
-Failed pings are automatically retried every 60 seconds while the entry is still fresh (< 5 minutes old).
+Failed pings are automatically retried every 60 seconds while the entry is still fresh (< 5 minutes old). The best repeater is automatically re-pinged every 2 minutes to keep its signal data fresh and verify reachability.
 
 ### Packets
 

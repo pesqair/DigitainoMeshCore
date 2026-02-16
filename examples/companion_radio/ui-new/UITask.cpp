@@ -2810,9 +2810,12 @@ public:
               display.setCursor(bx + 2, y);
               display.print("X");
             } else {
-              display.setColor(DisplayDriver::LIGHT);
-              display.setCursor(bx + 2, y);
-              display.print("?");
+              bool pinging = _task->_auto_ping_pending && _task->_auto_ping_current_id == se.id;
+              if (!pinging || (millis() / 300) % 2) {
+                display.setColor(pinging ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+                display.setCursor(bx + 2, y);
+                display.print("?");
+              }
             }
 
             // RX bars: down-arrow + 4 bars
@@ -3474,6 +3477,8 @@ public:
       _task->extendAutoOff();
       return 400;
     }
+    // Fast refresh for flashing ping indicator on Signals page
+    if (_page == HomePage::SIGNALS && _task->_auto_ping_pending) return 300;
     if (_needs_fast_refresh) return 1000;  // update live timers every second
     return 5000;   // next render after 5000 ms
   }
@@ -6025,6 +6030,7 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
         _signals[i].has_tx = true;
         _signals[i].tx_count++;
         _signals[i].last_rtt_ms = latency_ms;
+        _signals[i].last_heard = millis();  // keep entry alive on successful ping
         break;
       }
     }
@@ -6323,6 +6329,31 @@ void UITask::loop() {
     if (_auto_ping_queue_count > 0) {
       _auto_ping_next = 0;
       _auto_ping_next_time = millis() + 2000;
+    }
+  }
+
+  // Re-ping best repeater when its data gets stale (>2 min) to keep it alive
+  if (_auto_ping_queue_count == 0 && !_auto_ping_pending && !_probe_active &&
+      _signal_count > 0) {
+    // Find best repeater (same logic as status bar)
+    int best = 0;
+    for (int i = 1; i < _signal_count; i++) {
+      bool cur_bidi = _signals[i].has_rx && _signals[i].has_tx;
+      bool bst_bidi = _signals[best].has_rx && _signals[best].has_tx;
+      if (cur_bidi && !bst_bidi) {
+        best = i;
+      } else if (cur_bidi == bst_bidi) {
+        int8_t cur_snr = cur_bidi ? min(_signals[i].rx_snr_x4, _signals[i].tx_snr_x4) : _signals[i].rx_snr_x4;
+        int8_t bst_snr = bst_bidi ? min(_signals[best].rx_snr_x4, _signals[best].tx_snr_x4) : _signals[best].rx_snr_x4;
+        if (cur_snr > bst_snr) best = i;
+      }
+    }
+    if (_signals[best].has_tx && millis() - _signals[best].last_heard > 120000) {
+      _signals[best].has_tx = false;  // clear so it shows '?' while pinging
+      _auto_ping_queue[0] = _signals[best].id;
+      _auto_ping_queue_count = 1;
+      _auto_ping_next = 0;
+      _auto_ping_next_time = millis() + 500;
     }
   }
 
