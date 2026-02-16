@@ -2850,9 +2850,9 @@ public:
               display.print("?");
             }
 
-            // Packet counts (rx/tx)
+            // Packet counts (tx/rx — matches bar order)
             display.setColor(sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
-            snprintf(tmp, sizeof(tmp), "%u/%u", se.rx_count, se.tx_count);
+            snprintf(tmp, sizeof(tmp), "%u/%u", se.tx_count, se.rx_count);
             display.setCursor(col_cnt, y);
             display.print(tmp);
 
