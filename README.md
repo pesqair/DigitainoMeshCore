@@ -102,7 +102,7 @@ Live sensor data display (battery voltage, temperature, humidity, pressure, alti
 
 ### Settings
 
-Toggle options: GMT offset (LEFT/RIGHT to adjust -12 to +14, applies to clock and message timestamps), battery voltage display (text instead of icon), signal bars (with repeater ID), speed HUD, Bluetooth, and GPS.
+Toggle options: GMT offset (LEFT/RIGHT to adjust -12 to +14, applies to clock and message timestamps), battery voltage display (text instead of icon), signal bars (with repeater ID), speed HUD, beep w/ BLE (play buzzer for incoming messages even when companion app is connected), Bluetooth, and GPS.
 
 ### Advert
 

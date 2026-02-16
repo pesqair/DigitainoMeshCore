@@ -227,6 +227,7 @@ class HomeScreen : public UIScreen {
   bool _show_voltage;
   bool _show_speed;
   bool _show_snr;
+  bool _beep_on_ble;
   int8_t _gmt_offset;
   uint8_t _pkt_sel;  // selected packet in packet log page
   bool _pkt_detail;           // whether detail view is showing
@@ -901,7 +902,7 @@ public:
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
        _preset_sel(0), _msg_sel(0xFF), _msg_sel_prev(0xFF), _msg_scroll_px(0),
        _msg_detail(false), _msg_detail_scroll(0), _msg_reply_menu(false), _msg_reply_sel(0), _shutdown_init(false), _show_voltage(node_prefs->ui_flags & 0x01), _show_speed(node_prefs->ui_flags & 0x04),
-       _show_snr(node_prefs->ui_flags & 0x02), _gmt_offset(node_prefs->gmt_offset), _pkt_sel(0), _pkt_detail(false), _pkt_detail_scroll(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _odo_last_lat(0), _odo_last_lon(0), _nav_screen_lock(false), _nav_has_waypoint(false),
+       _show_snr(node_prefs->ui_flags & 0x02), _beep_on_ble(node_prefs->ui_flags & 0x08), _gmt_offset(node_prefs->gmt_offset), _pkt_sel(0), _pkt_detail(false), _pkt_detail_scroll(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _odo_last_lat(0), _odo_last_lon(0), _nav_screen_lock(false), _nav_has_waypoint(false),
        _page_active(false), _settings_sel(0), _ct_filter(0), _msg_vscroll(0), _msg_filter(0), _msg_filter_count(0), _msg_compose_menu(false), _msg_compose_sel(0), _msg_target_menu(false), _msg_target_sel(0),
        _preset_target_choosing(false), _preset_target_sel(0), _preset_edit_mode(false), _preset_edit_sel(0),
        _ct_sel(0), _ct_count(0), _ct_action(false), _ct_action_sel(0), _ct_action_count(0), _ct_detail_scroll(0),
@@ -3428,7 +3429,7 @@ public:
       display.drawTextCentered(display.width() / 2, TOP_BAR_H, "-- Settings --");
 
       // Settings entries: index 0 = GMT offset (special), rest are bool toggles
-      const int max_settings = 7;
+      const int max_settings = 8;
       const char* names[max_settings];
       bool values[max_settings];
       bool is_gmt[max_settings];
@@ -3441,6 +3442,7 @@ public:
 #if ENV_INCLUDE_GPS == 1
       names[sc] = "Speed HUD"; values[sc] = _show_speed; is_gmt[sc] = false; sc++;
 #endif
+      names[sc] = "Beep w/ BLE"; values[sc] = _beep_on_ble; is_gmt[sc] = false; sc++;
       names[sc] = "Bluetooth"; values[sc] = _task->isSerialEnabled(); is_gmt[sc] = false; sc++;
 #if ENV_INCLUDE_GPS == 1
       names[sc] = "GPS"; values[sc] = _task->getGPSState(); is_gmt[sc] = false; sc++;
@@ -4822,6 +4824,7 @@ public:
 #if ENV_INCLUDE_GPS == 1
       int id_speed = sc++;
 #endif
+      int id_beep_ble = sc++;
       int id_ble = sc++;
 #if ENV_INCLUDE_GPS == 1
       int id_gps = sc++;
@@ -4852,23 +4855,29 @@ public:
           _task->showAlert(alert, 800);
         } else if (_settings_sel == id_voltage) {
           _show_voltage = !_show_voltage;
-          _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0);
+          _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0) | (_beep_on_ble ? 0x08 : 0);
           the_mesh.savePrefs();
           _task->showAlert(_show_voltage ? "Voltage: ON" : "Voltage: OFF", 800);
         } else if (_settings_sel == id_snr) {
           _show_snr = !_show_snr;
-          _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0);
+          _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0) | (_beep_on_ble ? 0x08 : 0);
           the_mesh.savePrefs();
           _task->showAlert(_show_snr ? "Signal: ON" : "Signal: OFF", 800);
         }
 #if ENV_INCLUDE_GPS == 1
         else if (_settings_sel == id_speed) {
           _show_speed = !_show_speed;
-          _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0);
+          _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0) | (_beep_on_ble ? 0x08 : 0);
           the_mesh.savePrefs();
           _task->showAlert(_show_speed ? "Speed: ON" : "Speed: OFF", 800);
         }
 #endif
+        else if (_settings_sel == id_beep_ble) {
+          _beep_on_ble = !_beep_on_ble;
+          _node_prefs->ui_flags = (_show_voltage ? 0x01 : 0) | (_show_snr ? 0x02 : 0) | (_show_speed ? 0x04 : 0) | (_beep_on_ble ? 0x08 : 0);
+          the_mesh.savePrefs();
+          _task->showAlert(_beep_on_ble ? "Beep w/ BLE: ON" : "Beep w/ BLE: OFF", 800);
+        }
         else if (_settings_sel == id_ble) {
           if (_task->isSerialEnabled()) _task->disableSerial();
           else _task->enableSerial();

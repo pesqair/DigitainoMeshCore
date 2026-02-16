@@ -30,5 +30,5 @@ struct NodePrefs {  // persisted to file
   uint8_t autoadd_config;    // bitmask for auto-add contacts config
   uint8_t client_repeat;
   int8_t   gmt_offset;       // GMT offset in hours (-12 to +14)
-  uint8_t  ui_flags;         // bitmask: bit0=show_voltage, bit1=show_snr, bit2=show_speed
+  uint8_t  ui_flags;         // bitmask: bit0=show_voltage, bit1=show_snr, bit2=show_speed, bit3=beep_on_ble
 };
