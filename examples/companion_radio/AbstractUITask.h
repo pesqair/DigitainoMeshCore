@@ -67,6 +67,7 @@ public:
     uint32_t last_rtt_ms; // last ping round-trip time in ms (0 = unknown)
     uint8_t fail_count;           // consecutive ping failures (for backoff)
     unsigned long last_fail_time; // millis() when last failure occurred
+    unsigned long last_ping_time; // millis() when last ping was sent to this repeater
   };
   SignalEntry _signals[SIGNAL_MAX];
   uint8_t _signal_count = 0;
@@ -128,6 +129,7 @@ public:
       _signals[idx].last_rtt_ms = 0;
       _signals[idx].fail_count = 0;
       _signals[idx].last_fail_time = 0;
+      _signals[idx].last_ping_time = 0;
     } else if (idx < 0) {
       // Array full — evict oldest entry
       int oldest = 0;
@@ -147,6 +149,7 @@ public:
       _signals[idx].last_rtt_ms = 0;
       _signals[idx].fail_count = 0;
       _signals[idx].last_fail_time = 0;
+      _signals[idx].last_ping_time = 0;
     } else {
       // Rolling average: 75% old + 25% new
       _signals[idx].rx_snr_x4 = (int8_t)((_signals[idx].rx_snr_x4 * 3 + snr_x4) / 4);
@@ -155,14 +158,21 @@ public:
     }
     _signal_time = millis();
 
-    // Queue auto-ping if idle and this repeater needs TX data
+    // Queue auto-ping if idle and this repeater needs TX data or TX is stale
     bool ping_busy = (_auto_ping_queue_count > 0 &&
                       (_auto_ping_next < _auto_ping_queue_count || _auto_ping_pending));
-    if (_auto_tx_enabled && !ping_busy && idx >= 0 && !_signals[idx].has_tx) {
-      _auto_ping_queue[0] = first_path_byte;
-      _auto_ping_queue_count = 1;
-      _auto_ping_next = 0;
-      _auto_ping_next_time = millis() + 2000;  // 2s delay: let packet burst settle
+    if (_auto_tx_enabled && !ping_busy && idx >= 0) {
+      bool needs_tx = !_signals[idx].has_tx && !_signals[idx].tx_failed;
+      // Best repeater: ping back if TX data is stale (>60s since last ping)
+      bool tx_stale = _signals[idx].has_tx && first_path_byte == _best_ping_id &&
+                      _signals[idx].last_ping_time > 0 &&
+                      (millis() - _signals[idx].last_ping_time > 60000);
+      if (needs_tx || tx_stale) {
+        _auto_ping_queue[0] = first_path_byte;
+        _auto_ping_queue_count = 1;
+        _auto_ping_next = 0;
+        _auto_ping_next_time = millis() + 2000;  // 2s delay: let packet burst settle
+      }
     }
   }
   virtual void onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_x4) { }

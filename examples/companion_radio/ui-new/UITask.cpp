@@ -6255,6 +6255,7 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
           _signals[idx].last_rtt_ms = 0;
           _signals[idx].fail_count = 0;
           _signals[idx].last_fail_time = 0;
+          _signals[idx].last_ping_time = 0;
         }
         if (idx >= 0) {
           _signals[idx].rx_snr_x4 = entry.repeat_path_snr_x4[r];
@@ -6447,6 +6448,7 @@ void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, 
       _signals[_signal_count].last_rtt_ms = 0;
       _signals[_signal_count].fail_count = 0;
       _signals[_signal_count].last_fail_time = 0;
+      _signals[_signal_count].last_ping_time = 0;
       _signal_count++;
       _signal_time = millis();
       _auto_ping_queue[_auto_ping_queue_count++] = id;
@@ -6633,6 +6635,10 @@ void UITask::loop() {
           _auto_ping_pending = true;
           _auto_ping_current_id = hash;
           _auto_ping_timeout = millis() + est_timeout + 2000;
+          // Record ping time on the signal entry
+          for (uint8_t i = 0; i < _signal_count; i++) {
+            if (_signals[i].id == hash) { _signals[i].last_ping_time = millis(); break; }
+          }
         } else {
           // Send failed — mark tx_failed on signal entry
           for (uint8_t i = 0; i < _signal_count; i++) {
@@ -6744,10 +6750,11 @@ void UITask::loop() {
     unsigned long fail_interval = _signals[best].fail_count < 2 ? 60000UL / td :
                                   _signals[best].fail_count < 4 ? 120000UL / td : 0UL;
     unsigned long best_age = millis() - _signals[best].last_heard;
+    unsigned long tx_age = _signals[best].last_ping_time > 0 ? millis() - _signals[best].last_ping_time : 999999UL;
     if (best_age < 300000UL / td) {
       bool retry_failed = _signals[best].tx_failed && fail_interval > 0 &&
                           (millis() - _signals[best].last_fail_time > fail_interval);
-      bool refresh_stale = best_age > best_interval && _signals[best].has_tx;
+      bool refresh_stale = tx_age > best_interval && _signals[best].has_tx;
       bool never_checked = !_signals[best].has_tx && !_signals[best].tx_failed;
       if (retry_failed || refresh_stale || never_checked) {
         _signals[best].tx_failed = false;
@@ -6766,7 +6773,8 @@ void UITask::loop() {
                          _signals[i].fail_count < 4 ? 120000UL / td : 0UL;
       bool retry_failed = _signals[i].tx_failed && fi > 0 &&
                           (millis() - _signals[i].last_fail_time > fi);
-      bool refresh_stale = age > 120000UL / td && _signals[i].has_tx;
+      unsigned long txa = _signals[i].last_ping_time > 0 ? millis() - _signals[i].last_ping_time : 999999UL;
+      bool refresh_stale = txa > 120000UL / td && _signals[i].has_tx;
       bool never_checked = !_signals[i].has_tx && !_signals[i].tx_failed;
       if (retry_failed || refresh_stale || never_checked) {
         _signals[i].tx_failed = false;
