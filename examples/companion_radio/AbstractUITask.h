@@ -155,11 +155,6 @@ public:
     }
     _signal_time = millis();
 
-    // Organic RX from best repeater resets adaptive backoff to fast schedule
-    if (first_path_byte == _best_ping_id && !_auto_ping_pending) {
-      _best_ping_count = 0;
-    }
-
     // Queue auto-ping if idle and this repeater needs TX data
     bool ping_busy = (_auto_ping_queue_count > 0 &&
                       (_auto_ping_next < _auto_ping_queue_count || _auto_ping_pending));

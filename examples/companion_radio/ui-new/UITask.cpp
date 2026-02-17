@@ -5890,9 +5890,7 @@ switch(t){
 
 void UITask::msgRead(int msgcount) {
   _msgcount = msgcount;
-  if (msgcount == 0) {
-    gotoHomeScreen();
-  }
+  // Don't switch screens — just update count silently
 }
 
 void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount, int channel_idx, const uint8_t* path) {
@@ -6718,7 +6716,7 @@ void UITask::loop() {
   // Others: fixed 120s interval or retry on tx_failed
   if (_auto_tx_enabled && _auto_ping_queue_count == 0 && !_auto_ping_pending && !_probe_active &&
       _signal_count > 0 && millis() >= _retry_ping_time) {
-    _retry_ping_time = millis() + 30000UL / td;
+    _retry_ping_time = millis() + 60000UL / td;
 
     // Find best repeater (same logic as status bar)
     int best = 0;
@@ -6740,8 +6738,8 @@ void UITask::loop() {
       _best_ping_count = 0;
     }
 
-    // Adaptive interval for best: 30s (checks 0-3), 60s (4-7), 120s (8+)
-    unsigned long best_interval = _best_ping_count < 4 ? 30000UL / td : _best_ping_count < 8 ? 60000UL / td : 120000UL / td;
+    // Adaptive interval for best: 60s (checks 0-3), 120s (4-7), 300s (8+)
+    unsigned long best_interval = _best_ping_count < 4 ? 60000UL / td : _best_ping_count < 8 ? 120000UL / td : 300000UL / td;
     // Backoff interval for failed pings: 60s, 120s, then stop retrying
     unsigned long fail_interval = _signals[best].fail_count < 2 ? 60000UL / td :
                                   _signals[best].fail_count < 4 ? 120000UL / td : 0UL;
