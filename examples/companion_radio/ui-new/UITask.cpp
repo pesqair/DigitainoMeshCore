@@ -6707,15 +6707,23 @@ void UITask::loop() {
 #if ENV_INCLUDE_GPS == 1
   if (_motion_mode == 2) { td = 2; }        // Bike: always active
   else if (_motion_mode == 3) { td = 4; }   // Drive: always active
-  else if (_motion_mode == 1) {              // Auto: speed-based
+  else if (_motion_mode == 1) {              // Auto: speed-based with hysteresis
     LocationProvider* nmea = _sensors->getLocationProvider();
     if (nmea != NULL && nmea->isValid()) {
       float speed_mph = nmea->getSpeed() / 1000.0f * 1.15078f;
-      if (speed_mph >= 25.0f) td = 4;
-      else if (speed_mph >= 5.0f) td = 2;
+      // Hysteresis: upshift at 5/25 mph, downshift at 3/20 mph
+      // _td holds previous tier so GPS jitter near thresholds won't cause toggling
+      if (_td >= 4) {        // currently drive
+        td = (speed_mph < 20.0f) ? ((speed_mph >= 3.0f) ? 2 : 1) : 4;
+      } else if (_td >= 2) { // currently bike
+        td = (speed_mph >= 25.0f) ? 4 : ((speed_mph < 3.0f) ? 1 : 2);
+      } else {               // currently walk
+        td = (speed_mph >= 25.0f) ? 4 : ((speed_mph >= 5.0f) ? 2 : 1);
+      }
     }
   }
 #endif
+  _td = td;  // propagate to AbstractUITask for motion-aware onRxPacket
 
   // Adaptive signal refresh (sweep every 30s when idle, auto_tx_enabled)
   // Best repeater: adaptive backoff (30s/60s/120s based on check count)

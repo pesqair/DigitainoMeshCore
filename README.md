@@ -106,7 +106,7 @@ Toggle options: GMT offset (LEFT/RIGHT to adjust -12 to +14, applies to clock an
 
 **Motion Mode** (requires GPS): Adapts all signal timing constants for mobile use. Four settings cycled with ENTER:
 - **Off**: Normal stationary timings
-- **Auto**: Selects tier based on GPS speed — bike tier (timings /2) above 5 mph, drive tier (timings /4) above 25 mph
+- **Auto**: Selects tier based on GPS speed with hysteresis — upshifts to bike at 5 mph / drive at 25 mph, downshifts at 3 mph / 20 mph to prevent GPS jitter from toggling tiers
 - **Bike**: Bike tier always active (timings /2)
 - **Drive**: Drive tier always active (timings /4)
 

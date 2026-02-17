@@ -92,6 +92,7 @@ public:
   uint8_t _best_ping_id = 0;           // currently tracked best repeater hash
   uint8_t _best_ping_count = 0;        // number of checks since last reset
 
+  uint8_t _td = 1;              // current motion timing divisor (1/2/4), updated each loop
   uint8_t _manual_ping_id = 0;  // non-zero = waiting for manual ping result from signal detail
   unsigned long _discovery_sweep_time = 0;  // next periodic discovery while in motion
 
@@ -163,10 +164,10 @@ public:
                       (_auto_ping_next < _auto_ping_queue_count || _auto_ping_pending));
     if (_auto_tx_enabled && !ping_busy && idx >= 0) {
       bool needs_tx = !_signals[idx].has_tx && !_signals[idx].tx_failed;
-      // Best repeater: ping back if TX data is stale (>60s since last ping)
+      // Best repeater: ping back if TX data is stale (>60s/td since last ping)
       bool tx_stale = _signals[idx].has_tx && first_path_byte == _best_ping_id &&
                       _signals[idx].last_ping_time > 0 &&
-                      (millis() - _signals[idx].last_ping_time > 60000);
+                      (millis() - _signals[idx].last_ping_time > 60000UL / _td);
       if (needs_tx || tx_stale) {
         _auto_ping_queue[0] = first_path_byte;
         _auto_ping_queue_count = 1;
