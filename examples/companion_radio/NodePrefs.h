@@ -31,4 +31,6 @@ struct NodePrefs {  // persisted to file
   uint8_t client_repeat;
   int8_t   gmt_offset;       // GMT offset in hours (-12 to +14)
   uint8_t  ui_flags;         // bitmask: bit0=show_voltage, bit1=show_snr, bit2=show_speed, bit3=beep_on_ble, bit4=auto_tx_check, bit5-6=motion_mode(0=off,1=auto,2=bike,3=drive)
+  uint8_t path_hash_mode;    // which path mode to use when sending
+  uint8_t autoadd_max_hops;  // 0 = no limit, 1 = direct (0 hops), N = up to N-1 hops (max 64)
 };
