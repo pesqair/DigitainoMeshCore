@@ -482,7 +482,7 @@ int MyMesh::sendPing(const ContactInfo& contact, uint32_t& est_timeout) {
   memcpy(path, contact.id.pub_key, 6);
   sendDirect(pkt, path, 6);
   if (_ui) _ui->_last_tx_time = millis();
-  uint32_t t = _radio->getEstAirtimeFor(pkt->payload_len + pkt->path_len + 2);
+  uint32_t t = _radio->getEstAirtimeFor(pkt->payload_len + pkt->getPathByteLen() + 2);
   est_timeout = calcDirectTimeoutMillisFor(t, 6);
   ui_pending_ping_tag = tag;
   ui_pending_ping_start = millis();
@@ -1902,7 +1902,7 @@ void MyMesh::handleCmdFrame(size_t len) {
       if (pkt) {
         sendDirect(pkt, &cmd_frame[10], path_len);
 
-        uint32_t t = _radio->getEstAirtimeFor(pkt->payload_len + pkt->path_len + 2);
+        uint32_t t = _radio->getEstAirtimeFor(pkt->payload_len + pkt->getPathByteLen() + 2);
         uint32_t est_timeout = calcDirectTimeoutMillisFor(t, path_len >> path_sz);
 
         out_frame[0] = RESP_CODE_SENT;

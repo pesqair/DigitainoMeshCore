@@ -622,8 +622,8 @@ class HomeScreen : public UIScreen {
 #endif
 
     // 3. Signal bars (when _show_snr is ON)
-    // Unified layout: AA ▲[BARS] ▼[BARS] [mute][bat]
-    // Draw order (right-to-left): RX bars, TX bars, hex ID
+    // Unified layout: AA ▼[BARS] ▲[BARS] [mute][bat]
+    // Draw order (right-to-left): TX bars, RX bars, hex ID
     if (_show_snr) {
       int sig_start = right_x;
       int bars_w = 11;
@@ -699,41 +699,9 @@ class HomeScreen : public UIScreen {
         }
         auto& entry = _task->_signals[best];
 
-        // Compute RX bars from entry
-        int rx_bars = 0;
-        float rx_snr = (float)entry.rx_snr_x4 / 4.0f;
-        if (rx_snr > 10) rx_bars = 4;
-        else if (rx_snr > 5) rx_bars = 3;
-        else if (rx_snr > 0) rx_bars = 2;
-        else if (rx_snr > -10) rx_bars = 1;
-
-        // Draw RX bars with down-arrow (▼) on bar 0
-        right_x -= bars_w;
-        int bars_x = right_x;
-        if (rx_blink_on) {
-          display.setColor(rx_recent ? DisplayDriver::GREEN : DisplayDriver::LIGHT);
-          display.fillRect(bars_x, bars_y, 5, 1);
-          display.fillRect(bars_x + 1, bars_y + 1, 3, 1);
-          display.fillRect(bars_x + 2, bars_y + 2, 1, 1);
-        }
-        for (int b = 0; b < 4; b++) {
-          int bh = 3 + b * 2;
-          int bx = bars_x + b * 3;
-          int by = bars_y + (10 - bh);
-          if (b < rx_bars) {
-            display.setColor(DisplayDriver::GREEN);
-            display.fillRect(bx, by, 2, bh);
-          } else {
-            display.setColor(DisplayDriver::GREEN);
-            display.fillRect(bx, bars_y + 9, 2, 1);
-          }
-        }
-
-        right_x -= 1;  // gap between RX and TX
-
         // Draw TX bars with up-arrow (▲) on bar 0
         right_x -= bars_w;
-        bars_x = right_x;
+        int bars_x = right_x;
         if (tx_blink_on) {
           display.setColor(tx_recent ? DisplayDriver::GREEN : DisplayDriver::LIGHT);
           display.fillRect(bars_x + 2, bars_y, 1, 1);
@@ -769,6 +737,38 @@ class HomeScreen : public UIScreen {
           display.setColor(DisplayDriver::LIGHT);
           display.setCursor(bars_x + 3, bars_y + 3);
           display.print("?");
+        }
+
+        right_x -= 1;  // gap between TX and RX
+
+        // Compute RX bars from entry
+        int rx_bars = 0;
+        float rx_snr = (float)entry.rx_snr_x4 / 4.0f;
+        if (rx_snr > 10) rx_bars = 4;
+        else if (rx_snr > 5) rx_bars = 3;
+        else if (rx_snr > 0) rx_bars = 2;
+        else if (rx_snr > -10) rx_bars = 1;
+
+        // Draw RX bars with down-arrow (▼) on bar 0
+        right_x -= bars_w;
+        bars_x = right_x;
+        if (rx_blink_on) {
+          display.setColor(rx_recent ? DisplayDriver::GREEN : DisplayDriver::LIGHT);
+          display.fillRect(bars_x, bars_y, 5, 1);
+          display.fillRect(bars_x + 1, bars_y + 1, 3, 1);
+          display.fillRect(bars_x + 2, bars_y + 2, 1, 1);
+        }
+        for (int b = 0; b < 4; b++) {
+          int bh = 3 + b * 2;
+          int bx = bars_x + b * 3;
+          int by = bars_y + (10 - bh);
+          if (b < rx_bars) {
+            display.setColor(DisplayDriver::GREEN);
+            display.fillRect(bx, by, 2, bh);
+          } else {
+            display.setColor(DisplayDriver::GREEN);
+            display.fillRect(bx, bars_y + 9, 2, 1);
+          }
         }
 
         // Gap + hex ID
@@ -1490,10 +1490,13 @@ public:
           snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Hops: local");
         } else if (entry.path_len == 0xFF) {
           snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Hops: DM (direct)");
-        } else if (entry.path_len == 0) {
-          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Hops: 0 (direct)");
         } else {
-          snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Hops: %d", entry.path_len);
+          uint8_t hops = entry.path_len & 0x3F;  // low 6 bits = hop count (top 2 = hash size)
+          if (hops == 0) {
+            snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Hops: 0 (direct)");
+          } else {
+            snprintf(detail_items[detail_count], sizeof(detail_items[0]), "Hops: %d", hops);
+          }
         }
         detail_count++;
 
@@ -2982,9 +2985,9 @@ public:
 
           // Column positions (fixed so everything aligns)
           const int col_id   = 8;   // hex ID
-          const int col_tx   = 22;  // TX arrow + bars (matches status bar order)
-          const int col_rx   = 38;  // RX arrow + bars
-          const int col_cnt  = 55;  // packet counts (rx/tx)
+          const int col_rx   = 22;  // RX arrow + bars (matches status bar order)
+          const int col_tx   = 38;  // TX arrow + bars
+          const int col_cnt  = 55;  // packet counts (rx/tx — matches bar order)
           const int col_age  = 90;  // age
 
           int visible = 4;
@@ -3011,9 +3014,41 @@ public:
             display.setCursor(col_id, y);
             display.print(tmp);
 
-            // TX bars: up-arrow + 4 bars / X / ? (drawn first, matching status bar order)
+            // RX bars: down-arrow + 4 bars (drawn first, matching status bar order)
             int bars_y = y + 1;
-            int bx = col_tx;
+            int bx = col_rx;
+            display.setColor(DisplayDriver::GREEN);
+            // Down arrow ▼
+            display.fillRect(bx, bars_y, 3, 1);
+            display.fillRect(bx + 1, bars_y + 1, 1, 1);
+            bx += 4;
+            if (se.has_rx) {
+              int rx_bars = 0;
+              float rx_snr = (float)se.rx_snr_x4 / 4.0f;
+              if (rx_snr > 10) rx_bars = 4;
+              else if (rx_snr > 5) rx_bars = 3;
+              else if (rx_snr > 0) rx_bars = 2;
+              else if (rx_snr > -10) rx_bars = 1;
+              for (int b = 0; b < 4; b++) {
+                int bh = 2 + b * 2;
+                int bx2 = bx + b * 3;
+                int by2 = bars_y + (8 - bh);
+                if (b < rx_bars) {
+                  display.setColor(DisplayDriver::GREEN);
+                  display.fillRect(bx2, by2, 2, bh);
+                } else {
+                  display.setColor(DisplayDriver::GREEN);
+                  display.fillRect(bx2, bars_y + 7, 2, 1);
+                }
+              }
+            } else {
+              display.setColor(DisplayDriver::LIGHT);
+              display.setCursor(bx + 2, y);
+              display.print("?");
+            }
+
+            // TX bars: up-arrow + 4 bars / X / ?
+            bx = col_tx;
             display.setColor(DisplayDriver::GREEN);
             // Up arrow ▲
             display.fillRect(bx + 1, bars_y, 1, 1);
@@ -3051,41 +3086,9 @@ public:
               }
             }
 
-            // RX bars: down-arrow + 4 bars
-            bx = col_rx;
-            display.setColor(DisplayDriver::GREEN);
-            // Down arrow ▼
-            display.fillRect(bx, bars_y, 3, 1);
-            display.fillRect(bx + 1, bars_y + 1, 1, 1);
-            bx += 4;
-            if (se.has_rx) {
-              int rx_bars = 0;
-              float rx_snr = (float)se.rx_snr_x4 / 4.0f;
-              if (rx_snr > 10) rx_bars = 4;
-              else if (rx_snr > 5) rx_bars = 3;
-              else if (rx_snr > 0) rx_bars = 2;
-              else if (rx_snr > -10) rx_bars = 1;
-              for (int b = 0; b < 4; b++) {
-                int bh = 2 + b * 2;
-                int bx2 = bx + b * 3;
-                int by2 = bars_y + (8 - bh);
-                if (b < rx_bars) {
-                  display.setColor(DisplayDriver::GREEN);
-                  display.fillRect(bx2, by2, 2, bh);
-                } else {
-                  display.setColor(DisplayDriver::GREEN);
-                  display.fillRect(bx2, bars_y + 7, 2, 1);
-                }
-              }
-            } else {
-              display.setColor(DisplayDriver::LIGHT);
-              display.setCursor(bx + 2, y);
-              display.print("?");
-            }
-
-            // Packet counts (tx/rx — matches bar order)
+            // Packet counts (rx/tx — matches bar order)
             display.setColor(sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
-            snprintf(tmp, sizeof(tmp), "%u/%u", se.tx_count, se.rx_count);
+            snprintf(tmp, sizeof(tmp), "%u/%u", se.rx_count, se.tx_count);
             display.setCursor(col_cnt, y);
             display.print(tmp);
 
