@@ -34,4 +34,6 @@ struct NodePrefs {  // persisted to file
   int8_t   gmt_offset;       // GMT offset in hours (-12 to +14)
   uint8_t autoadd_max_hops;  // 0 = no limit, 1 = direct (0 hops), N = up to N-1 hops (max 64)
   uint8_t  ui_flags;         // bitmask: bit0=show_voltage, bit1=show_snr, bit2=show_speed, bit3=beep_on_ble, bit4=auto_tx_check, bit5-6=motion_mode(0=off,1=auto,2=bike,3=drive)
+  char default_scope_name[31];
+  uint8_t default_scope_key[16];
 };
