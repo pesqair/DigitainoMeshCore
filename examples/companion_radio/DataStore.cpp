@@ -618,7 +618,37 @@ bool DataStore::deleteBlobByKey(const uint8_t key[], int key_len) {
   makeBlobPath(key, key_len, path, sizeof(path));
 
   _fs->remove(path);
-  
+
   return true; // return true even if file did not exist
 }
 #endif
+
+// iOS sync framework: per-sync_id blob in /sync_NN
+static void make_sync_path(uint8_t sync_id, char* path, size_t path_size) {
+  snprintf(path, path_size, "/sync_%02X", sync_id);
+}
+
+uint16_t DataStore::loadSyncBlob(uint8_t sync_id, uint8_t* dest, uint16_t max_len) {
+  char path[16];
+  make_sync_path(sync_id, path, sizeof(path));
+  File file = openRead(_fs, path);
+  if (!file) return 0;
+  // First 2 bytes = stored length (little endian), then payload
+  uint16_t stored_len = 0;
+  if (file.read((uint8_t*)&stored_len, 2) != 2) { file.close(); return 0; }
+  if (stored_len > max_len) stored_len = max_len;
+  uint16_t n = file.read(dest, stored_len);
+  file.close();
+  return n;
+}
+
+bool DataStore::saveSyncBlob(uint8_t sync_id, const uint8_t* src, uint16_t len) {
+  char path[16];
+  make_sync_path(sync_id, path, sizeof(path));
+  File file = openWrite(_fs, path);
+  if (!file) return false;
+  file.write((const uint8_t*)&len, 2);
+  if (len > 0) file.write(src, len);
+  file.close();
+  return true;
+}

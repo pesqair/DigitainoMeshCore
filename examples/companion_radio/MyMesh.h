@@ -175,6 +175,31 @@ public:
   void queueSentChannelMessage(int channel_idx, uint32_t timestamp, const char* text, int text_len);
   void queueSentDirectMessage(const ContactInfo& recipient, uint32_t timestamp, const char* text);
 
+  // ----- iOS sync framework -----
+  // Notification preferences synced from companion app. Holds decoded rule table.
+  static const uint8_t NOTIF_MAX_CHANNEL_RULES = 16;
+  static const uint8_t NOTIF_MAX_CONTACT_RULES = 16;
+  struct NotifPrefs {
+    uint8_t version;             // schema version (1)
+    uint8_t global_mode;         // NOTIF_MODE_*
+    uint8_t num_channel_rules;
+    struct { uint8_t channel_idx; uint8_t mode; } channel_rules[NOTIF_MAX_CHANNEL_RULES];
+    uint8_t num_contact_rules;
+    struct { uint8_t pub_key[6]; uint8_t mode; } contact_rules[NOTIF_MAX_CONTACT_RULES];
+  };
+  NotifPrefs _notif_prefs;
+
+  // Returns true if a beep/vibration should fire for this incoming message.
+  // channel_idx >= 0 for channel messages; pub_key (6 bytes) for DMs (NULL if not applicable).
+  // text is the message body (used for mention matching against _prefs.node_name).
+  bool shouldNotifyForChannel(int channel_idx, const char* text) const;
+  bool shouldNotifyForContact(const uint8_t* pub_key, const char* text) const;
+private:
+  bool evalNotifMode(uint8_t mode, const char* text) const;
+  void initNotifPrefsDefaults();
+  void parseNotifPrefs(const uint8_t* data, uint16_t len);
+public:
+
 #if ENV_INCLUDE_GPS == 1
   void applyGpsPrefs() {
     sensors.setSettingValue("gps", _prefs.gps_enabled ? "1" : "0");

@@ -64,6 +64,20 @@
 #define CMD_SET_DEFAULT_FLOOD_SCOPE   63
 #define CMD_GET_DEFAULT_FLOOD_SCOPE   64
 
+// Custom: iOS sync framework
+#define CMD_GET_SYNC                  68
+#define CMD_SET_SYNC                  69
+#define CMD_LIST_SYNC                 70
+
+// Sync IDs
+#define SYNC_ID_NOTIF_PREFS           1
+
+// Notification modes (per-rule and global)
+#define NOTIF_MODE_SILENT             0
+#define NOTIF_MODE_ALL                1
+#define NOTIF_MODE_MENTIONS           2
+#define NOTIF_MODE_URGENT             3   // reserved for future
+
 // Stats sub-types for CMD_GET_STATS
 #define STATS_TYPE_CORE               0
 #define STATS_TYPE_RADIO              1
@@ -98,6 +112,10 @@
 #define RESP_ALLOWED_REPEAT_FREQ      26
 #define RESP_CODE_CHANNEL_DATA_RECV   27
 #define RESP_CODE_DEFAULT_FLOOD_SCOPE 28
+
+// Custom: iOS sync framework responses (high range to avoid upstream collision)
+#define RESP_CODE_SYNC_VALUE         100   // reply to CMD_GET_SYNC: [code][sync_id][len_lo][len_hi][payload]
+#define RESP_CODE_SYNC_LIST          101   // reply to CMD_LIST_SYNC: [code][count]([sync_id][len_lo][len_hi]) x count
 
 #define MAX_CHANNEL_DATA_LENGTH       (MAX_FRAME_SIZE - 9)
 
@@ -601,7 +619,9 @@ void MyMesh::queueMessage(const ContactInfo &from, uint8_t txt_type, mesh::Packe
   bool should_display = txt_type == TXT_TYPE_PLAIN || txt_type == TXT_TYPE_SIGNED_PLAIN;
   if (should_display && _ui) {
     _ui->newMsg(path_len, from.name, text, offline_queue_len, -1, pkt->path);
-    if ((!_serial->isConnected() || (_prefs.ui_flags & 0x08)) && !_prefs.buzzer_quiet) {
+    // Gate beep/vibration by iOS-synced notification rules (per-contact rule, falling back to global)
+    if (shouldNotifyForContact(from.id.pub_key, text) &&
+        (!_serial->isConnected() || (_prefs.ui_flags & 0x08)) && !_prefs.buzzer_quiet) {
       _ui->notify(UIEventType::contactMessage);
     }
   }
@@ -703,7 +723,7 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
     _serial->writeFrame(frame, 1);
   } else {
 #ifdef DISPLAY_CLASS
-    if (_ui) _ui->notify(UIEventType::channelMessage);
+    if (_ui && shouldNotifyForChannel(channel_idx, text)) _ui->notify(UIEventType::channelMessage);
 #endif
   }
 #ifdef DISPLAY_CLASS
@@ -715,7 +735,9 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
   }
   if (_ui) {
     _ui->newMsg(path_len, channel_name, text, offline_queue_len, channel_idx, pkt->path);
-    if ((!_serial->isConnected() || (_prefs.ui_flags & 0x08)) && !_prefs.buzzer_quiet) {
+    // Gate beep/vibration by iOS-synced notification rules (per-channel rule, falling back to global)
+    if (shouldNotifyForChannel(channel_idx, text) &&
+        (!_serial->isConnected() || (_prefs.ui_flags & 0x08)) && !_prefs.buzzer_quiet) {
       _ui->notify(UIEventType::channelMessage);
     }
   }
@@ -1107,6 +1129,93 @@ uint32_t MyMesh::calcDirectTimeoutMillisFor(uint32_t pkt_airtime_millis, uint8_t
 
 void MyMesh::onSendTimeout() {}
 
+// ---------------- iOS sync: notification preferences ----------------
+
+void MyMesh::initNotifPrefsDefaults() {
+  memset(&_notif_prefs, 0, sizeof(_notif_prefs));
+  _notif_prefs.version = 1;
+  _notif_prefs.global_mode = NOTIF_MODE_ALL;  // preserve existing beep-all behavior
+}
+
+void MyMesh::parseNotifPrefs(const uint8_t* data, uint16_t len) {
+  if (len < 4) return;  // need at least header
+  uint16_t i = 0;
+  initNotifPrefsDefaults();
+  _notif_prefs.version = data[i++];
+  _notif_prefs.global_mode = data[i++];
+  uint8_t nc = data[i++];
+  if (nc > NOTIF_MAX_CHANNEL_RULES) nc = NOTIF_MAX_CHANNEL_RULES;
+  for (uint8_t j = 0; j < nc && i + 2 <= len; j++) {
+    _notif_prefs.channel_rules[j].channel_idx = data[i++];
+    _notif_prefs.channel_rules[j].mode = data[i++];
+    _notif_prefs.num_channel_rules = j + 1;
+  }
+  if (i >= len) return;
+  uint8_t nr = data[i++];
+  if (nr > NOTIF_MAX_CONTACT_RULES) nr = NOTIF_MAX_CONTACT_RULES;
+  for (uint8_t j = 0; j < nr && i + 7 <= len; j++) {
+    memcpy(_notif_prefs.contact_rules[j].pub_key, &data[i], 6);
+    i += 6;
+    _notif_prefs.contact_rules[j].mode = data[i++];
+    _notif_prefs.num_contact_rules = j + 1;
+  }
+}
+
+// Case-insensitive substring search (haystack contains needle?)
+static const char* notif_strcasestr(const char* haystack, const char* needle) {
+  if (!haystack || !needle || !*needle) return haystack;
+  for (; *haystack; haystack++) {
+    const char* h = haystack;
+    const char* n = needle;
+    while (*h && *n) {
+      char a = *h; char b = *n;
+      if (a >= 'A' && a <= 'Z') a += 32;
+      if (b >= 'A' && b <= 'Z') b += 32;
+      if (a != b) break;
+      h++; n++;
+    }
+    if (!*n) return haystack;
+  }
+  return NULL;
+}
+
+bool MyMesh::evalNotifMode(uint8_t mode, const char* text) const {
+  if (mode == NOTIF_MODE_SILENT) return false;
+  if (mode == NOTIF_MODE_ALL) return true;
+  if (mode == NOTIF_MODE_MENTIONS) {
+    if (!text || _prefs.node_name[0] == '\0') return false;
+    return notif_strcasestr(text, _prefs.node_name) != NULL;
+  }
+  // NOTIF_MODE_URGENT or anything unknown: behave like ALL (safe default)
+  return true;
+}
+
+bool MyMesh::shouldNotifyForChannel(int channel_idx, const char* text) const {
+  uint8_t mode = _notif_prefs.global_mode;
+  if (channel_idx >= 0) {
+    for (uint8_t j = 0; j < _notif_prefs.num_channel_rules; j++) {
+      if (_notif_prefs.channel_rules[j].channel_idx == (uint8_t)channel_idx) {
+        mode = _notif_prefs.channel_rules[j].mode;
+        break;
+      }
+    }
+  }
+  return evalNotifMode(mode, text);
+}
+
+bool MyMesh::shouldNotifyForContact(const uint8_t* pub_key, const char* text) const {
+  uint8_t mode = _notif_prefs.global_mode;
+  if (pub_key) {
+    for (uint8_t j = 0; j < _notif_prefs.num_contact_rules; j++) {
+      if (memcmp(_notif_prefs.contact_rules[j].pub_key, pub_key, 6) == 0) {
+        mode = _notif_prefs.contact_rules[j].mode;
+        break;
+      }
+    }
+  }
+  return evalNotifMode(mode, text);
+}
+
 MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMeshTables &tables, DataStore& store, AbstractUITask* ui)
     : BaseChatMesh(radio, *new ArduinoMillis(), rng, rtc, *new StaticPoolPacketManager(16), tables),
       _serial(NULL), telemetry(MAX_PACKET_PAYLOAD - 4), _store(&store), _ui(ui) {
@@ -1180,6 +1289,12 @@ void MyMesh::begin(bool has_display) {
 
   // load persisted prefs
   _store->loadPrefs(_prefs, sensors.node_lat, sensors.node_lon);
+
+  // Load notification preferences (synced from iOS companion app)
+  initNotifPrefsDefaults();
+  uint8_t blob[172];
+  uint16_t blob_len = _store->loadSyncBlob(SYNC_ID_NOTIF_PREFS, blob, sizeof(blob));
+  if (blob_len > 0) parseNotifPrefs(blob, blob_len);
 
   // sanitise bad pref values
   _prefs.rx_delay_base = constrain(_prefs.rx_delay_base, 0, 20.0f);
@@ -2219,6 +2334,50 @@ void MyMesh::handleCmdFrame(size_t len) {
       memcpy(&out_frame[i], &r->lower_freq, 4); i += 4;
       memcpy(&out_frame[i], &r->upper_freq, 4); i += 4;
     }
+    _serial->writeFrame(out_frame, i);
+  } else if (cmd_frame[0] == CMD_GET_SYNC && len >= 2) {
+    // CMD_GET_SYNC: [cmd][sync_id]  ->  [RESP_CODE_SYNC_VALUE][sync_id][len_lo][len_hi][payload...]
+    uint8_t sync_id = cmd_frame[1];
+    int i = 0;
+    out_frame[i++] = RESP_CODE_SYNC_VALUE;
+    out_frame[i++] = sync_id;
+    uint16_t blob_len = _store->loadSyncBlob(sync_id, &out_frame[i + 2], sizeof(out_frame) - i - 2);
+    memcpy(&out_frame[i], &blob_len, 2); i += 2;
+    i += blob_len;
+    _serial->writeFrame(out_frame, i);
+  } else if (cmd_frame[0] == CMD_SET_SYNC && len >= 4) {
+    // CMD_SET_SYNC: [cmd][sync_id][len_lo][len_hi][payload...]
+    uint8_t sync_id = cmd_frame[1];
+    uint16_t blob_len;
+    memcpy(&blob_len, &cmd_frame[2], 2);
+    if (4 + (uint32_t)blob_len > len) {
+      writeErrFrame(ERR_CODE_ILLEGAL_ARG);
+    } else if (_store->saveSyncBlob(sync_id, &cmd_frame[4], blob_len)) {
+      // Apply immediately for known sync types
+      if (sync_id == SYNC_ID_NOTIF_PREFS) {
+        parseNotifPrefs(&cmd_frame[4], blob_len);
+      }
+      writeOKFrame();
+    } else {
+      writeErrFrame(ERR_CODE_FILE_IO_ERROR);
+    }
+  } else if (cmd_frame[0] == CMD_LIST_SYNC) {
+    // List known sync IDs (currently just NOTIF_PREFS); response is variable depending on what's stored.
+    int i = 0;
+    out_frame[i++] = RESP_CODE_SYNC_LIST;
+    static const uint8_t known_ids[] = { SYNC_ID_NOTIF_PREFS };
+    uint8_t count = 0;
+    uint8_t count_pos = i++;  // reserve slot
+    uint8_t probe[4];
+    for (uint8_t k = 0; k < sizeof(known_ids) / sizeof(known_ids[0]); k++) {
+      uint16_t l = _store->loadSyncBlob(known_ids[k], probe, sizeof(probe));
+      // emit only if a blob exists OR always emit known ids (here: always)
+      out_frame[i++] = known_ids[k];
+      memcpy(&out_frame[i], &l, 2); i += 2;
+      count++;
+      (void)probe;
+    }
+    out_frame[count_pos] = count;
     _serial->writeFrame(out_frame, i);
   } else {
     writeErrFrame(ERR_CODE_UNSUPPORTED_CMD);

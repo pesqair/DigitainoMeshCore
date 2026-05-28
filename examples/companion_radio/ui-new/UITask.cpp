@@ -248,6 +248,9 @@ class HomeScreen : public UIScreen {
   char _nav_wp_name[12];           // truncated contact name
   bool _page_active;
   uint8_t _settings_sel;
+  // Radio page TX power edit state
+  bool _radio_edit_mode;          // true = currently adjusting TX power
+  int8_t _radio_orig_power;       // saved before edit; restored on CANCEL
   uint8_t _ct_filter;  // 0=All, 1=Contacts, 2=Repeaters
   // Message channel filter
   int _msg_vscroll;             // first visible display line in multi-line mode
@@ -998,7 +1001,7 @@ public:
        _preset_sel(0), _msg_sel(0xFF), _msg_sel_prev(0xFF), _msg_scroll_px(0),
        _msg_detail(false), _msg_detail_scroll(0), _msg_reply_menu(false), _msg_reply_sel(0), _shutdown_init(false), _show_voltage(node_prefs->ui_flags & 0x01), _show_speed(node_prefs->ui_flags & 0x04),
        _show_snr(node_prefs->ui_flags & 0x02), _beep_on_ble(node_prefs->ui_flags & 0x08), _auto_tx_check(!(node_prefs->ui_flags & 0x10)), _motion_mode_setting((node_prefs->ui_flags >> 5) & 0x03), _gmt_offset(node_prefs->gmt_offset), _pkt_sel(0), _pkt_detail(false), _pkt_detail_scroll(0), _path_sel(-1), _max_speed(0), _odometer(0), _odo_last(0), _odo_last_lat(0), _odo_last_lon(0), _nav_screen_lock(false), _nav_has_waypoint(false),
-       _page_active(false), _settings_sel(0), _ct_filter(0), _msg_vscroll(0), _msg_filter(0), _msg_filter_count(0), _msg_compose_menu(false), _msg_compose_sel(0), _msg_target_menu(false), _msg_target_sel(0),
+       _page_active(false), _settings_sel(0), _radio_edit_mode(false), _radio_orig_power(0), _ct_filter(0), _msg_vscroll(0), _msg_filter(0), _msg_filter_count(0), _msg_compose_menu(false), _msg_compose_sel(0), _msg_target_menu(false), _msg_target_sel(0),
        _preset_target_choosing(false), _preset_target_sel(0), _preset_edit_mode(false), _preset_edit_sel(0),
        _ct_sel(0), _ct_count(0), _ct_action(false), _ct_action_sel(0), _ct_action_count(0), _ct_detail_scroll(0),
        _ct_path_pending(false), _ct_path_found(false),
@@ -3141,10 +3144,20 @@ public:
       sprintf(tmp, "BW: %03.2f     CR: %d", _node_prefs->bw, _node_prefs->cr);
       display.print(tmp);
 
-      // tx power,  noise floor
+      // tx power: in edit mode, show ▼/▲ arrows + value + hint; blink the value
+      bool blink = (millis() / 400) & 1;
       display.setCursor(0, TOP_BAR_H + 26);
-      sprintf(tmp, "TX: %ddBm", _node_prefs->tx_power_dbm);
+      if (_radio_edit_mode && !blink) {
+        // Blink off — print empty space to draw attention
+        sprintf(tmp, "TX: [   dBm]  -/+");
+      } else if (_radio_edit_mode) {
+        sprintf(tmp, "TX: [%ddBm]  -/+", _node_prefs->tx_power_dbm);
+      } else {
+        sprintf(tmp, "TX: %ddBm     ENT=edit", _node_prefs->tx_power_dbm);
+      }
       display.print(tmp);
+      if (_radio_edit_mode) _needs_fast_refresh = true;  // animate blink
+
       display.setCursor(0, TOP_BAR_H + 38);
       sprintf(tmp, "Noise floor: %d", radio_driver.getNoiseFloor());
       display.print(tmp);
@@ -5146,6 +5159,42 @@ public:
     if (c == KEY_ENTER && _page == HomePage::SHUTDOWN) {
       _shutdown_init = true;  // need to wait for button to be released
       return true;
+    }
+    if (_page == HomePage::RADIO) {
+      // SX1262 TX power range: -9 to +22 dBm
+      const int8_t TX_PWR_MIN = -9;
+      const int8_t TX_PWR_MAX = 22;
+      if (_radio_edit_mode) {
+        if (c == KEY_UP) {
+          if (_node_prefs->tx_power_dbm < TX_PWR_MAX) _node_prefs->tx_power_dbm++;
+          return true;
+        }
+        if (c == KEY_DOWN) {
+          if (_node_prefs->tx_power_dbm > TX_PWR_MIN) _node_prefs->tx_power_dbm--;
+          return true;
+        }
+        if (c == KEY_ENTER) {
+          // Commit: apply to radio and persist
+          radio_set_tx_power(_node_prefs->tx_power_dbm);
+          the_mesh.savePrefs();
+          _radio_edit_mode = false;
+          _task->showAlert("TX power saved", 600);
+          return true;
+        }
+        if (c == KEY_CANCEL) {
+          // Revert
+          _node_prefs->tx_power_dbm = _radio_orig_power;
+          _radio_edit_mode = false;
+          return true;
+        }
+      } else {
+        if (c == KEY_ENTER) {
+          _radio_orig_power = _node_prefs->tx_power_dbm;
+          _radio_edit_mode = true;
+          return true;
+        }
+        // CANCEL falls through to default page-exit handler below
+      }
     }
     if (_page == HomePage::SETTINGS) {
       int sc = 0;
