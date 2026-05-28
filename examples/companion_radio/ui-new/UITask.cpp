@@ -1524,6 +1524,8 @@ public:
 
           if (entry.repeat_path_len > 0) {
             // Build heard-by list, only including repeaters with signal data
+            // Each entry shows first byte for compactness; full hash visible on selection.
+            uint8_t rphs = entry.repeat_path_hash_size > 0 ? entry.repeat_path_hash_size : 1;
             int heard_shown = 0;
             char* p = detail_items[detail_count];
             int pos = snprintf(p, sizeof(detail_items[0]), "Heard by:");
@@ -1533,7 +1535,7 @@ public:
                 pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, ",");
               }
               heard_rpt_map[heard_shown] = i; // map display index -> repeat_path index
-              pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, "%02X", entry.repeat_path[i]);
+              pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, "%02X", entry.repeat_path[i * rphs]);
               heard_shown++;
             }
             if (heard_shown > 0) {
@@ -1564,7 +1566,9 @@ public:
         }
 
         // Received messages: Path (only if there are repeater hops)
+        // Path line shows first byte per hop for compactness; full hash shown in Hop: line on selection.
         if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF) {
+          uint8_t phs = entry.path_hash_size > 0 ? entry.path_hash_size : 1;
           path_detail_idx = detail_count;
           path_count_for_nav = entry.path_len;
           char* p = detail_items[detail_count];
@@ -1573,9 +1577,21 @@ public:
             if (i > 0) {
               pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, ">");
             }
-            pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, "%02X", entry.path[i]);
+            pos += snprintf(p + pos, sizeof(detail_items[0]) - pos, "%02X", entry.path[i * phs]);
           }
           detail_count++;
+
+          // Multi-byte hash: show selected hop's full hash on a dedicated line.
+          // Only shown when a hop is selected (LEFT/RIGHT) AND hash size > 1 (1-byte already fully shown in Path).
+          if (phs > 1 && _path_sel >= 0 && _path_sel < entry.path_len) {
+            char* hp = detail_items[detail_count];
+            int hpos = snprintf(hp, sizeof(detail_items[0]), "Hop %d: ", _path_sel + 1);
+            for (uint8_t b = 0; b < phs; b++) {
+              hpos += snprintf(hp + hpos, sizeof(detail_items[0]) - hpos, "%02X",
+                               entry.path[_path_sel * phs + b]);
+            }
+            detail_count++;
+          }
         }
 
         // Reply options
@@ -1620,15 +1636,23 @@ public:
         if (entry.is_sent && _path_sel >= 0 && signal_detail_idx >= 0 && heard_detail_idx >= 0) {
           // Map display index to actual repeat_path index
           int rp_idx = (_path_sel < heard_count_for_nav) ? heard_rpt_map[_path_sel] : _path_sel;
-          uint8_t sel_hash = entry.repeat_path[rp_idx];
+          uint8_t rphs = entry.repeat_path_hash_size > 0 ? entry.repeat_path_hash_size : 1;
+          // Build full hash hex string (up to 3 bytes = 6 hex chars)
+          char hash_hex[8];
+          int hp = 0;
+          for (uint8_t b = 0; b < rphs && hp + 2 < (int)sizeof(hash_hex); b++) {
+            hp += snprintf(hash_hex + hp, sizeof(hash_hex) - hp, "%02X",
+                           entry.repeat_path[rp_idx * rphs + b]);
+          }
+          hash_hex[hp] = '\0';
           int16_t sel_rssi = entry.repeat_path_rssi[rp_idx];
           float sel_snr = (float)entry.repeat_path_snr_x4[rp_idx] / 4.0f;
           if (sel_rssi != 0) {
             snprintf(detail_items[signal_detail_idx], sizeof(detail_items[0]),
-                     "[%02X] %d/%.1f", sel_hash, sel_rssi, sel_snr);
+                     "[%s] %d/%.1f", hash_hex, sel_rssi, sel_snr);
           } else {
             snprintf(detail_items[signal_detail_idx], sizeof(detail_items[0]),
-                     "[%02X] no signal", sel_hash);
+                     "[%s] no signal", hash_hex);
           }
         }
 
@@ -1851,7 +1875,7 @@ public:
             } else if (entry.is_sent && entry.heard_repeats > 0) {
               snprintf(prefix, sizeof(prefix), "(%d) ", entry.heard_repeats);
             } else if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF) {
-              snprintf(prefix, sizeof(prefix), "<%02X> ", entry.path[entry.path_len - 1]);
+              snprintf(prefix, sizeof(prefix), "<%02X> ", entry.path[(entry.path_len - 1) * (entry.path_hash_size > 0 ? entry.path_hash_size : 1)]);
             }
             char line[104];
             if (is_channel_filter)
@@ -1884,7 +1908,7 @@ public:
               } else if (entry.is_sent && entry.heard_repeats > 0) {
                 snprintf(prefix, sizeof(prefix), "(%d) ", entry.heard_repeats);
               } else if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF) {
-                snprintf(prefix, sizeof(prefix), "<%02X> ", entry.path[entry.path_len - 1]);
+                snprintf(prefix, sizeof(prefix), "<%02X> ", entry.path[(entry.path_len - 1) * (entry.path_hash_size > 0 ? entry.path_hash_size : 1)]);
               }
               char line[104];
               if (is_channel_filter)
@@ -1925,7 +1949,7 @@ public:
             } else if (entry.is_sent && entry.heard_repeats > 0) {
               snprintf(prefix, sizeof(prefix), "(%d) ", entry.heard_repeats);
             } else if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF) {
-              snprintf(prefix, sizeof(prefix), "<%02X> ", entry.path[entry.path_len - 1]);
+              snprintf(prefix, sizeof(prefix), "<%02X> ", entry.path[(entry.path_len - 1) * (entry.path_hash_size > 0 ? entry.path_hash_size : 1)]);
             }
             char line[104];
             if (is_channel_filter)
@@ -2030,7 +2054,7 @@ public:
             } else if (entry.is_sent && entry.heard_repeats > 0) {
               snprintf(prefix, sizeof(prefix), "(%d) ", entry.heard_repeats);
             } else if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF) {
-              snprintf(prefix, sizeof(prefix), "<%02X> ", entry.path[entry.path_len - 1]);
+              snprintf(prefix, sizeof(prefix), "<%02X> ", entry.path[(entry.path_len - 1) * (entry.path_hash_size > 0 ? entry.path_hash_size : 1)]);
             }
             snprintf(line, sizeof(line), "%s: %s", entry.origin, entry.text);
 
@@ -3188,11 +3212,12 @@ public:
 
         // Path (if path_len > 0)
         if (pkt.path_len > 0) {
+          uint8_t phs = pkt.path_hash_size > 0 ? pkt.path_hash_size : 1;
           char path_buf[20];
           int pos = 0;
           for (int p = 0; p < pkt.path_len && pos < 16; p++) {
             if (p > 0) path_buf[pos++] = ' ';
-            pos += snprintf(&path_buf[pos], sizeof(path_buf) - pos, "%02X", pkt.path[p]);
+            pos += snprintf(&path_buf[pos], sizeof(path_buf) - pos, "%02X", pkt.path[p * phs]);
           }
           path_buf[pos] = '\0';
           snprintf(detail_items[detail_count++], 24, "Path: %s", path_buf);
@@ -4491,8 +4516,13 @@ public:
           int buf_idx = (_task->_msg_log_next - 1 - _filt_idx2 + MSG_LOG_SIZE) % MSG_LOG_SIZE;
           auto& entry = _task->_msg_log[buf_idx];
           uint8_t rpt_hash = 0;
+          const uint8_t* full_hash = NULL;
+          uint8_t full_hash_size = 1;
           if (!entry.is_sent && entry.path_len > 0 && entry.path_len != 0xFF && _path_sel < entry.path_len) {
-            rpt_hash = entry.path[_path_sel];
+            uint8_t phs = entry.path_hash_size > 0 ? entry.path_hash_size : 1;
+            full_hash = &entry.path[_path_sel * phs];
+            full_hash_size = phs;
+            rpt_hash = full_hash[0];
           } else if (entry.is_sent) {
             // Map display index to actual repeat_path index (filtered by signal)
             int mapped = 0, disp_idx = 0;
@@ -4502,15 +4532,21 @@ public:
                 disp_idx++;
               }
             }
-            if (mapped < entry.repeat_path_len) rpt_hash = entry.repeat_path[mapped];
+            if (mapped < entry.repeat_path_len) {
+              uint8_t rphs = entry.repeat_path_hash_size > 0 ? entry.repeat_path_hash_size : 1;
+              full_hash = &entry.repeat_path[mapped * rphs];
+              full_hash_size = rphs;
+              rpt_hash = full_hash[0];
+            }
           }
           if (rpt_hash != 0) {
-            // Search contacts for matching last pub_key byte
+            // Match contacts by prefix of pub_key (use full hash_size bytes for better accuracy in multi-byte mode)
             ContactInfo ci;
             int n = the_mesh.getNumContacts();
             bool found = false;
             for (int i = 0; i < n; i++) {
-              if (the_mesh.getContactByIdx(i, ci) && ci.id.pub_key[0] == rpt_hash) {
+              if (the_mesh.getContactByIdx(i, ci) &&
+                  memcmp(ci.id.pub_key, full_hash, full_hash_size) == 0) {
                 uint32_t est_timeout;
                 int result = the_mesh.sendPathFind(ci, est_timeout);
                 if (result != MSG_SEND_FAILED) {
@@ -6072,17 +6108,24 @@ void UITask::sendPresetDM(const ContactInfo& contact) {
 }
 
 void UITask::logPacket(uint8_t payload_type, uint8_t path_len, const uint8_t* path, int16_t rssi, int8_t snr_x4, uint8_t route_type, uint8_t payload_len) {
+  // path_len is the encoded packet path_length byte: low 6 bits = hop count, top 2 bits = hash_size - 1
+  uint8_t hop_count = path_len & 0x3F;
+  uint8_t hash_size = (path_len >> 6) + 1;
   auto& entry = _pkt_log[_pkt_log_next];
   entry.payload_type = payload_type;
-  entry.first_hop = (path_len > 0 && path != NULL) ? path[path_len - 1] : 0;
+  entry.first_hop = (hop_count > 0 && path != NULL) ? path[(hop_count - 1) * hash_size] : 0;
   entry.rssi = rssi;
   entry.snr_x4 = snr_x4;
   entry.timestamp = millis();
   entry.route_type = route_type;
   entry.payload_len = payload_len;
-  entry.path_len = (path_len > 8) ? 8 : path_len;
-  if (path_len > 0 && path != NULL) {
-    memcpy(entry.path, path, entry.path_len);
+  entry.path_hash_size = hash_size;
+  // Store as many complete hops as fit in entry.path[] buffer
+  uint8_t max_hops = sizeof(entry.path) / hash_size;
+  uint8_t stored = (hop_count > max_hops) ? max_hops : hop_count;
+  entry.path_len = stored;
+  if (path != NULL && stored > 0) {
+    memcpy(entry.path, path, (size_t)stored * hash_size);
   }
   _pkt_log_next = (_pkt_log_next + 1) % PACKET_LOG_SIZE;
   if (_pkt_log_count < PACKET_LOG_SIZE) _pkt_log_count++;
@@ -6096,7 +6139,12 @@ void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uin
   strncpy(entry.text, text, sizeof(entry.text) - 1);
   entry.text[sizeof(entry.text) - 1] = '\0';
   entry.is_sent = is_sent;
-  entry.path_len = path_len;
+  // path_len is the encoded packet path_length byte: low 6 bits = hop count, top 2 bits = hash_size - 1
+  // 0xFF is the DM sentinel; we store decoded hop count in entry.path_len (or 0xFF for DM)
+  uint8_t hop_count = (path_len == 0xFF) ? 0 : (path_len & 0x3F);
+  uint8_t hash_size = (path_len == 0xFF) ? 1 : ((path_len >> 6) + 1);
+  entry.path_len = (path_len == 0xFF) ? 0xFF : hop_count;
+  entry.path_hash_size = hash_size;
   entry.channel_idx = channel_idx;
   if (contact_name) {
     strncpy(entry.contact_name, contact_name, sizeof(entry.contact_name) - 1);
@@ -6104,8 +6152,14 @@ void UITask::addToMsgLog(const char* origin, const char* text, bool is_sent, uin
   } else {
     entry.contact_name[0] = '\0';
   }
-  if (path && path_len > 0 && path_len != 0xFF && path_len <= MAX_PATH_SIZE) {
-    memcpy(entry.path, path, path_len);
+  // Store full hash bytes for each hop so the detail view can show 2-/3-byte hashes
+  uint16_t total_bytes = (uint16_t)hop_count * hash_size;
+  if (path && hop_count > 0 && total_bytes <= sizeof(entry.path)) {
+    memcpy(entry.path, path, total_bytes);
+    // zero remainder so trailing bytes don't show garbage
+    if (total_bytes < sizeof(entry.path)) {
+      memset(entry.path + total_bytes, 0, sizeof(entry.path) - total_bytes);
+    }
   } else {
     memset(entry.path, 0, sizeof(entry.path));
   }
@@ -6197,14 +6251,22 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
       if (entry.heard_repeats < 255) entry.heard_repeats++;
       entry.repeat_rssi = rssi;
       entry.repeat_snr_x4 = snr_x4;
+      // path_len is the encoded packet path_length byte: low 6 bits = hop count, top 2 bits = hash_size - 1
+      uint8_t hop_count = path_len & 0x3F;
+      uint8_t hash_size = (path_len >> 6) + 1;
+      // Hash size is preserved across all retransmissions of the same message; set on first arrival
+      if (entry.repeat_path_len == 0) entry.repeat_path_hash_size = hash_size;
+      // Max unique entries that fit in repeat_path[] given the hash size
+      uint8_t max_entries = sizeof(entry.repeat_path) / hash_size;
       // Accumulate unique repeater hashes from this path, with per-repeater signal
-      // Path order: path[0]=first hop from sender (furthest), path[path_len-1]=last hop (direct to us)
-      int last_hop = path_len - 1;
-      for (int p = 0; p < path_len; p++) {
+      // Hop order: hop 0 = first hop from sender (furthest), hop last = direct to us
+      int last_hop = (int)hop_count - 1;
+      for (int p = 0; p < hop_count; p++) {
+        const uint8_t* hop_hash = &path[p * hash_size];
         // Check if this repeater hash is already stored
         bool found = false;
         for (int r = 0; r < entry.repeat_path_len; r++) {
-          if (entry.repeat_path[r] == path[p]) {
+          if (memcmp(&entry.repeat_path[r * hash_size], hop_hash, hash_size) == 0) {
             // Update signal only for last hop (direct transmitter to us)
             if (p == last_hop) {
               entry.repeat_path_rssi[r] = rssi;
@@ -6214,9 +6276,9 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
             break;
           }
         }
-        if (!found && entry.repeat_path_len < MAX_PATH_SIZE) {
+        if (!found && entry.repeat_path_len < max_entries && entry.repeat_path_len < MAX_PATH_SIZE) {
           int idx = entry.repeat_path_len++;
-          entry.repeat_path[idx] = path[p];
+          memcpy(&entry.repeat_path[idx * hash_size], hop_hash, hash_size);
           // Only last hop has measurable signal (direct transmitter to us)
           if (p == last_hop) {
             entry.repeat_path_rssi[idx] = rssi;
@@ -6230,7 +6292,7 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
       // Merge retransmission RX data into existing signal entries
       for (int r = 0; r < entry.repeat_path_len; r++) {
         if (entry.repeat_path_snr_x4[r] == 0) continue;
-        uint8_t rid = entry.repeat_path[r];
+        uint8_t rid = entry.repeat_path[r * hash_size];  // first byte of stored hash
         int idx = -1;
         for (int s = 0; s < _signal_count; s++) {
           if (_signals[s].id == rid) { idx = s; break; }

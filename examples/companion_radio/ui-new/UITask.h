@@ -89,9 +89,10 @@ public:
     char text[164];
     bool is_sent;
     uint8_t path_len;     // hops: 0=direct/self, 0xFF=DM, else=flood hops
+    uint8_t path_hash_size;   // 1, 2, or 3 bytes per hop hash in path[]
     int channel_idx;      // >=0 = channel msg (reply on this channel), -1 = DM
     char contact_name[24]; // for DM: sender name to reply to
-    uint8_t path[MAX_PATH_SIZE]; // repeater hashes along the route
+    uint8_t path[MAX_PATH_SIZE]; // repeater hashes (hop_i at offset i*path_hash_size, hash_size bytes each)
     int16_t rssi;             // RSSI at receive time (0 = not recorded)
     int8_t  snr_x4;           // SNR * 4 at receive time (0.25 dB resolution)
     // Sent message repeat tracking
@@ -99,7 +100,8 @@ public:
     uint8_t heard_repeats;    // count of heard retransmissions
     int16_t repeat_rssi;      // RSSI of most recent repeat heard
     int8_t  repeat_snr_x4;    // SNR*4 of most recent repeat heard
-    uint8_t repeat_path[MAX_PATH_SIZE]; // unique repeater hashes heard
+    uint8_t repeat_path[MAX_PATH_SIZE]; // unique repeater hashes (entry_i at offset i*repeat_path_hash_size)
+    uint8_t repeat_path_hash_size; // 1, 2, or 3 bytes per entry in repeat_path[]
     int16_t repeat_path_rssi[MAX_PATH_SIZE]; // per-repeater RSSI
     int8_t  repeat_path_snr_x4[MAX_PATH_SIZE]; // per-repeater SNR*4
     uint8_t repeat_path_len;  // count of unique repeaters heard
@@ -115,12 +117,13 @@ public:
   // Packet log (circular buffer)
   struct PacketLogEntry {
     uint8_t payload_type;
-    uint8_t first_hop;    // path[0] or 0
+    uint8_t first_hop;    // first byte of last hop's hash
     int16_t rssi;
     int8_t  snr_x4;
     unsigned long timestamp;  // millis()
     uint8_t path_len;     // number of hops in path
-    uint8_t path[8];      // up to 8 path hop hashes
+    uint8_t path_hash_size; // 1, 2, or 3 bytes per hop hash in path[]
+    uint8_t path[12];     // up to 12 bytes: enough for 12 hops (1B), 6 hops (2B), or 4 hops (3B)
     uint8_t route_type;   // 2-bit from header (PH_ROUTE_MASK)
     uint8_t payload_len;  // size of payload in bytes
   };

@@ -302,19 +302,22 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
     if (has_tc) i += 4;
     if (i >= len) return;
     uint8_t plen = raw[i++];
-    if (i + plen > len) return;
+    // plen is the encoded path_length byte: low 6 bits = hop count, top 2 bits = hash_size - 1
+    uint8_t hop_count = plen & 0x3F;
+    uint8_t hash_size = (plen >> 6) + 1;
+    uint16_t path_bytes = (uint16_t)hop_count * hash_size;
+    if (i + path_bytes > len) return;
     const uint8_t* path = &raw[i];
     // Track last-hop hash and signal for status bar display
-    // Use path[plen-1] = the node we received directly from (whose signal we measured)
-    // Use function parameters directly (not _radio->getLast*) to avoid stale values
+    // Use first byte of the last hop's hash = the node we received directly from
     int16_t rx_rssi = (int16_t)rssi;
     int8_t rx_snr_x4 = (int8_t)(snr * 4.0f);
-    if (plen > 0) {
-      _ui->onRxPacket(path[plen - 1], rx_rssi, rx_snr_x4);
+    if (hop_count > 0) {
+      _ui->onRxPacket(path[(hop_count - 1) * hash_size], rx_rssi, rx_snr_x4);
     } else {
       _ui->onRxPacket(0, rx_rssi, rx_snr_x4);  // direct packet, no relay ID
     }
-    i += plen;
+    i += path_bytes;
     int payload_len = len - i;
     if (payload_len <= 0) return;
 
