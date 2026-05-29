@@ -1112,6 +1112,60 @@ class HomeScreen : public UIScreen {
     for (int i = _settings_sel; i >= 0; i--) if (settingSelectable(items[i])) { _settings_sel = i; return; }
   }
 
+  // ---- Quick-jump launcher: a flat list of all pages to jump to directly ----
+  bool _launcher_active = false;
+  int _launcher_sel = 0;
+
+  // Short page title used by the launcher list (mirrors the carousel card titles).
+  const char* pageTitle(uint8_t page) const {
+    switch (page) {
+      case HomePage::FIRST:    return "Home";
+      case HomePage::MESSAGES: return "Messages";
+      case HomePage::PRESETS:  return "Quick Msg";
+      case HomePage::TRACE:    return "Contacts";
+      case HomePage::RECENT:   return "Recent";
+      case HomePage::SIGNALS:  return "Signals";
+      case HomePage::PACKETS:  return "Packets";
+      case HomePage::RADIO:    return "Radio";
+      case HomePage::NEARBY:   return "Nearby";
+#if ENV_INCLUDE_GPS == 1
+      case HomePage::GPS:      return "GPS";
+      case HomePage::NAV:      return "Navigation";
+#endif
+#if UI_SENSORS_PAGE == 1
+      case HomePage::SENSORS:  return "Sensors";
+#endif
+      case HomePage::SETTINGS: return "Settings";
+      case HomePage::ADVERT:   return "Advert";
+      case HomePage::SHUTDOWN: return "Hibernate";
+    }
+    return "?";
+  }
+
+  bool handleLauncherKey(char c) {
+    const int total = HomePage::Count;
+    if (_launcher_sel >= total) _launcher_sel = total - 1;
+    if (_launcher_sel < 0) _launcher_sel = 0;
+    if (c == KEY_UP)   { if (_launcher_sel > 0) _launcher_sel--; return true; }
+    if (c == KEY_DOWN) { if (_launcher_sel < total - 1) _launcher_sel++; return true; }
+    if (c == KEY_ENTER) {
+      _launcher_active = false;
+      _page = _launcher_sel;
+      if (_page == HomePage::FIRST) {
+        _page_active = false;   // Home dashboard is shown directly
+      } else {
+        _page_active = true;
+        if (_page == HomePage::MESSAGES) {
+          _msg_sel = 0xFF; _msg_sel_prev = 0xFF; _msg_scroll_px = 0; _msg_vscroll = 0;
+          _msg_compose_menu = false; _msg_target_menu = false; _msg_detail = false;
+        }
+      }
+      return true;
+    }
+    if (c == KEY_CANCEL || c == KEY_LEFT) { _launcher_active = false; return true; }
+    return true;  // consume other keys
+  }
+
 public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, SensorManager* sensors, NodePrefs* node_prefs)
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
@@ -1289,6 +1343,27 @@ public:
 
     // === TOP BAR (always visible) ===
     renderStatusBar(display);
+
+    if (_launcher_active) {
+      // === QUICK-JUMP LAUNCHER ===
+      display.setColor(DisplayDriver::YELLOW);
+      display.drawTextCentered(display.width() / 2, TOP_BAR_H, "-- Go to --");
+      const int total = HomePage::Count;
+      if (_launcher_sel >= total) _launcher_sel = total - 1;
+      if (_launcher_sel < 0) _launcher_sel = 0;
+      const int visible = 4;
+      int scroll = (_launcher_sel >= visible) ? (_launcher_sel - visible + 1) : 0;
+      if (scroll > total - visible) scroll = (total > visible) ? total - visible : 0;
+      if (scroll < 0) scroll = 0;
+      int y = TOP_BAR_H + 12;
+      for (int i = scroll; i < scroll + visible && i < total; i++, y += 12) {
+        bool selected = (i == _launcher_sel);
+        display.setColor(selected ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+        if (selected) { display.setCursor(0, y); display.print(">"); }
+        display.drawTextEllipsized(10, y, display.width() - 10, pageTitle((uint8_t)i));
+      }
+      return 5000;
+    }
 
     if (!_page_active && _page == HomePage::FIRST) {
       // === HOME DASHBOARD (shown directly in carousel, no click needed) ===
@@ -3851,6 +3926,7 @@ public:
   }
 
   bool handleInput(char c) override {
+    if (_launcher_active) return handleLauncherKey(c);
     if (_sb_active) return handleStatusBarKey(c);
 
     if (!_page_active) {
@@ -3867,8 +3943,18 @@ public:
         enterStatusBar();
         return true;
       }
+      if (c == KEY_DOWN) {
+        // Open the quick-jump launcher (works from any carousel page)
+        _launcher_active = true;
+        _launcher_sel = _page;
+        return true;
+      }
       if (c == KEY_ENTER) {
-        if (_page == HomePage::FIRST) return true;  // Home dashboard shown directly, no level 2
+        if (_page == HomePage::FIRST) {  // Home center button → quick-jump launcher
+          _launcher_active = true;
+          _launcher_sel = _page;
+          return true;
+        }
         _page_active = true;
         // Reset page state on entry from carousel
         if (_page == HomePage::MESSAGES) {
