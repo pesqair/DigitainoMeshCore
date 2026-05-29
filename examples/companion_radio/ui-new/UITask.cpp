@@ -642,22 +642,22 @@ class HomeScreen : public UIScreen {
 
       // Motion-aware prune threshold
       unsigned long prune_ms = 300000UL;
+      unsigned int ptd = 1;
 #if ENV_INCLUDE_GPS == 1
-      {
-        unsigned int ptd = 1;
-        if (_task->_motion_mode == 2) { ptd = 2; }
-        else if (_task->_motion_mode == 3) { ptd = 4; }
-        else if (_task->_motion_mode == 1) {
-          LocationProvider* nmea = sensors.getLocationProvider();
-          if (nmea != NULL && nmea->isValid()) {
-            float speed_mph = nmea->getSpeed() / 1000.0f * 1.15078f;
-            if (speed_mph >= 25.0f) ptd = 4;
-            else if (speed_mph >= 5.0f) ptd = 2;
-          }
+      if (_task->_motion_mode == 2) { ptd = 2; }
+      else if (_task->_motion_mode == 3) { ptd = 4; }
+      else if (_task->_motion_mode == 1) {
+        LocationProvider* nmea = sensors.getLocationProvider();
+        if (nmea != NULL && nmea->isValid()) {
+          float speed_mph = nmea->getSpeed() / 1000.0f * 1.15078f;
+          if (speed_mph >= 25.0f) ptd = 4;
+          else if (speed_mph >= 5.0f) ptd = 2;
         }
-        prune_ms /= ptd;
       }
 #endif
+      // Phone motion hint boosts pruning cadence even when the radio's GPS is off
+      { uint8_t pd = _task->phoneMotionDivisor(); if (pd > ptd) ptd = pd; }
+      prune_ms /= ptd;
 
       // Prune stale entries (>prune_ms since last heard)
       for (int i = 0; i < _task->_signal_count; ) {
@@ -682,24 +682,9 @@ class HomeScreen : public UIScreen {
                       (millis() - _task->_last_rx_time) / 1000 < (prune_ms / 1000);
 
       if (use_cycling) {
-        // Pick best repeater: prioritize bidirectional (has_tx + has_rx), then strongest signal
-        int best = 0;
-        for (int i = 1; i < _task->_signal_count; i++) {
-          auto& cur = _task->_signals[i];
-          auto& bst = _task->_signals[best];
-          bool cur_bidi = cur.has_rx && cur.has_tx;
-          bool bst_bidi = bst.has_rx && bst.has_tx;
-          if (cur_bidi && !bst_bidi) {
-            best = i;  // bidirectional beats unidirectional
-          } else if (cur_bidi == bst_bidi) {
-            // Same tier — compare signal strength
-            // For bidi: use weaker of the two (link limited by weakest direction)
-            // For non-bidi: use RX SNR
-            int8_t cur_snr = cur_bidi ? min(cur.rx_snr_x4, cur.tx_snr_x4) : cur.rx_snr_x4;
-            int8_t bst_snr = bst_bidi ? min(bst.rx_snr_x4, bst.tx_snr_x4) : bst.rx_snr_x4;
-            if (cur_snr > bst_snr) best = i;
-          }
-        }
+        // Pick best repeater (shared scorer: bidi-preferred, then 0.6*TX+0.4*RX w/ weak-leg guard)
+        int best = _task->pickBestSignal();
+        if (best < 0) best = 0;
         auto& entry = _task->_signals[best];
 
         // Draw TX bars with up-arrow (▲) on bar 0
@@ -919,6 +904,21 @@ class HomeScreen : public UIScreen {
           left_x += 8;
         }
         if (_sb_count < SB_MAX_SLOTS) _sb_slots[_sb_count++] = {SB_ENVELOPE, env_x, left_x - env_x};
+      }
+    }
+
+    // 3b. App-sync indicator: a companion app is actively mirroring the signal table
+    //     (it polled getSync within the last ~15s). Small phone glyph.
+    if (_task->isAppSyncingSignals()) {
+      if (left_x > 0) left_x += 2;
+      if (left_x + 5 <= left_max) {
+        display.setColor(DisplayDriver::LIGHT);
+        display.fillRect(left_x,     3, 5, 1);   // phone top
+        display.fillRect(left_x,    10, 5, 1);   // phone bottom
+        display.fillRect(left_x,     3, 1, 8);   // phone left edge
+        display.fillRect(left_x + 4, 3, 1, 8);   // phone right edge
+        display.fillRect(left_x + 1, 9, 3, 1);   // button strip
+        left_x += 5;
       }
     }
 
@@ -6825,7 +6825,9 @@ void UITask::loop() {
     }
   }
 #endif
-  _td = td;  // propagate to AbstractUITask for motion-aware onRxPacket
+  _td = td;  // GPS-derived tier (kept pure so the hysteresis above stays stable)
+  // Phone motion hint (companion app) boosts ping cadence when the radio's GPS is off/idle
+  { uint8_t pd = phoneMotionDivisor(); if (pd > td) td = pd; }
 
   // Adaptive signal refresh (sweep every 30s when idle, auto_tx_enabled)
   // Best repeater: adaptive backoff (30s/60s/120s based on check count)
@@ -6834,19 +6836,9 @@ void UITask::loop() {
       _signal_count > 0 && millis() >= _retry_ping_time) {
     _retry_ping_time = millis() + 60000UL / td;
 
-    // Find best repeater (same logic as status bar)
-    int best = 0;
-    for (int i = 1; i < _signal_count; i++) {
-      bool cur_bidi = _signals[i].has_rx && _signals[i].has_tx;
-      bool bst_bidi = _signals[best].has_rx && _signals[best].has_tx;
-      if (cur_bidi && !bst_bidi) {
-        best = i;
-      } else if (cur_bidi == bst_bidi) {
-        int8_t cur_snr = cur_bidi ? min(_signals[i].rx_snr_x4, _signals[i].tx_snr_x4) : _signals[i].rx_snr_x4;
-        int8_t bst_snr = bst_bidi ? min(_signals[best].rx_snr_x4, _signals[best].tx_snr_x4) : _signals[best].rx_snr_x4;
-        if (cur_snr > bst_snr) best = i;
-      }
-    }
+    // Find best repeater (shared scorer — matches the status-bar highlight + app)
+    int best = pickBestSignal();
+    if (best < 0) best = 0;
 
     // Track best repeater changes — reset backoff when best changes
     if (_signals[best].id != _best_ping_id) {

@@ -71,6 +71,8 @@
 
 // Sync IDs
 #define SYNC_ID_NOTIF_PREFS           1
+#define SYNC_ID_SIGNAL_BARS           2   // live repeater signal table (radio -> app); GET=serialize, SET=refresh trigger
+#define SYNC_ID_MOTION_HINT           3   // phone motion level (app -> radio); SET only [ver, level]
 
 // Notification modes (per-rule and global)
 #define NOTIF_MODE_SILENT             0
@@ -2341,7 +2343,13 @@ void MyMesh::handleCmdFrame(size_t len) {
     int i = 0;
     out_frame[i++] = RESP_CODE_SYNC_VALUE;
     out_frame[i++] = sync_id;
-    uint16_t blob_len = _store->loadSyncBlob(sync_id, &out_frame[i + 2], sizeof(out_frame) - i - 2);
+    uint16_t blob_len;
+    if (sync_id == SYNC_ID_SIGNAL_BARS && _ui) {
+      // Live, ephemeral: serialize the current repeater signal table (no file read)
+      blob_len = _ui->serializeSignalBars(&out_frame[i + 2], sizeof(out_frame) - i - 2);
+    } else {
+      blob_len = _store->loadSyncBlob(sync_id, &out_frame[i + 2], sizeof(out_frame) - i - 2);
+    }
     memcpy(&out_frame[i], &blob_len, 2); i += 2;
     i += blob_len;
     _serial->writeFrame(out_frame, i);
@@ -2352,6 +2360,17 @@ void MyMesh::handleCmdFrame(size_t len) {
     memcpy(&blob_len, &cmd_frame[2], 2);
     if (4 + (uint32_t)blob_len > len) {
       writeErrFrame(ERR_CODE_ILLEGAL_ARG);
+    } else if (sync_id == SYNC_ID_SIGNAL_BARS) {
+      // Ephemeral action (not persisted): [action, target_id]; action 1 = ping target, else refresh all
+      uint8_t action = (blob_len >= 1) ? cmd_frame[4] : 0;
+      uint8_t target = (blob_len >= 2) ? cmd_frame[5] : 0;
+      if (_ui) _ui->requestSignalRefresh(action == 1 ? target : 0);
+      writeOKFrame();
+    } else if (sync_id == SYNC_ID_MOTION_HINT) {
+      // Ephemeral (not persisted): [version, level]
+      uint8_t level = (blob_len >= 2) ? cmd_frame[5] : 0;
+      if (_ui) _ui->setMotionHint(level);
+      writeOKFrame();
     } else if (_store->saveSyncBlob(sync_id, &cmd_frame[4], blob_len)) {
       // Apply immediately for known sync types
       if (sync_id == SYNC_ID_NOTIF_PREFS) {
@@ -2365,7 +2384,7 @@ void MyMesh::handleCmdFrame(size_t len) {
     // List known sync IDs (currently just NOTIF_PREFS); response is variable depending on what's stored.
     int i = 0;
     out_frame[i++] = RESP_CODE_SYNC_LIST;
-    static const uint8_t known_ids[] = { SYNC_ID_NOTIF_PREFS };
+    static const uint8_t known_ids[] = { SYNC_ID_NOTIF_PREFS, SYNC_ID_SIGNAL_BARS, SYNC_ID_MOTION_HINT };
     uint8_t count = 0;
     uint8_t count_pos = i++;  // reserve slot
     uint8_t probe[4];
