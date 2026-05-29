@@ -995,6 +995,123 @@ class HomeScreen : public UIScreen {
            (_auto_tx_check ? 0 : 0x10) | ((_motion_mode_setting & 0x03) << 5);
   }
 
+  // ---- Unified Settings model: one ordered list of section headers + items,
+  //      built once and consumed by both the renderer and the input handler. ----
+  enum SettingId : uint8_t {
+    // Section headers (keep contiguous and first)
+    SG_H_DISPLAY, SG_H_SOUND, SG_H_RADIO, SG_H_LOCATION, SG_H_CONN, SG_H_DEVICE,
+    // Display
+    SG_VOLTAGE, SG_SIGNAL, SG_SPEED, SG_GMT,
+    // Sound
+    SG_BUZZER, SG_BEEP,
+    // Radio
+    SG_TXPOWER, SG_FREQ, SG_SF, SG_BW, SG_CR,
+    // Location
+    SG_GPS, SG_MOTION,
+    // Connectivity
+    SG_BLE, SG_AUTOTX,
+    // Device
+    SG_NAME, SG_VER,
+  };
+
+  static bool settingIsHeader(uint8_t id) { return id <= SG_H_DEVICE; }
+  static bool settingIsReadonly(uint8_t id) {
+    return id == SG_FREQ || id == SG_SF || id == SG_BW || id == SG_CR ||
+           id == SG_NAME || id == SG_VER;
+  }
+  static bool settingSelectable(uint8_t id) {
+    return !settingIsHeader(id) && !settingIsReadonly(id);
+  }
+
+  // Fills `out` with the ordered row list (headers + items). Returns row count.
+  int buildSettings(uint8_t* out) const {
+    int n = 0;
+    out[n++] = SG_H_DISPLAY;
+    out[n++] = SG_VOLTAGE;
+    out[n++] = SG_SIGNAL;
+#if ENV_INCLUDE_GPS == 1
+    out[n++] = SG_SPEED;
+#endif
+    out[n++] = SG_GMT;
+    out[n++] = SG_H_SOUND;
+#ifdef PIN_BUZZER
+    out[n++] = SG_BUZZER;
+#endif
+    out[n++] = SG_BEEP;
+    out[n++] = SG_H_RADIO;
+    out[n++] = SG_TXPOWER;
+    out[n++] = SG_FREQ;
+    out[n++] = SG_SF;
+    out[n++] = SG_BW;
+    out[n++] = SG_CR;
+#if ENV_INCLUDE_GPS == 1
+    out[n++] = SG_H_LOCATION;
+    out[n++] = SG_GPS;
+    out[n++] = SG_MOTION;
+#endif
+    out[n++] = SG_H_CONN;
+    out[n++] = SG_BLE;
+    out[n++] = SG_AUTOTX;
+    out[n++] = SG_H_DEVICE;
+    out[n++] = SG_NAME;
+    out[n++] = SG_VER;
+    return n;
+  }
+
+  const char* settingHeaderText(uint8_t id) const {
+    switch (id) {
+      case SG_H_DISPLAY:  return "DISPLAY";
+      case SG_H_SOUND:    return "SOUND";
+      case SG_H_RADIO:    return "RADIO";
+      case SG_H_LOCATION: return "LOCATION";
+      case SG_H_CONN:     return "CONNECTIVITY";
+      case SG_H_DEVICE:   return "DEVICE";
+    }
+    return "";
+  }
+
+  void formatSettingRow(uint8_t id, char* buf, size_t len) const {
+    buf[0] = 0;
+    switch (id) {
+      case SG_VOLTAGE: snprintf(buf, len, "Battery volt [%s]", _show_voltage ? "ON" : "OFF"); break;
+      case SG_SIGNAL:  snprintf(buf, len, "Signal bars [%s]", _show_snr ? "ON" : "OFF"); break;
+      case SG_SPEED:   snprintf(buf, len, "Speed HUD [%s]", _show_speed ? "ON" : "OFF"); break;
+      case SG_GMT:     snprintf(buf, len, "GMT [%s%d]", _gmt_offset >= 0 ? "+" : "", _gmt_offset); break;
+      case SG_BUZZER:  snprintf(buf, len, "Buzzer [%s]", _node_prefs->buzzer_quiet ? "OFF" : "ON"); break;
+      case SG_BEEP:    snprintf(buf, len, "Beep w/ BLE [%s]", _beep_on_ble ? "ON" : "OFF"); break;
+      case SG_TXPOWER:
+        if (_radio_edit_mode) {
+          if ((millis() / 400) & 1) snprintf(buf, len, "TX power [%ddBm] -/+", _node_prefs->tx_power_dbm);
+          else                      snprintf(buf, len, "TX power [   dBm] -/+");
+        } else {
+          snprintf(buf, len, "TX power %ddBm", _node_prefs->tx_power_dbm);
+        }
+        break;
+      case SG_FREQ:    snprintf(buf, len, "Freq %.3f (app)", _node_prefs->freq); break;
+      case SG_SF:      snprintf(buf, len, "SF %d (app)", _node_prefs->sf); break;
+      case SG_BW:      snprintf(buf, len, "BW %.0f (app)", _node_prefs->bw); break;
+      case SG_CR:      snprintf(buf, len, "CR %d (app)", _node_prefs->cr); break;
+      case SG_GPS:     snprintf(buf, len, "GPS [%s]", _task->getGPSState() ? "ON" : "OFF"); break;
+      case SG_MOTION:  { const char* mm[] = {"Off", "Auto", "Bike", "Drive"};
+                         snprintf(buf, len, "Motion [%s]", mm[_motion_mode_setting & 0x03]); } break;
+      case SG_BLE:     snprintf(buf, len, "Bluetooth [%s]", _task->isSerialEnabled() ? "ON" : "OFF"); break;
+      case SG_AUTOTX:  snprintf(buf, len, "Auto TX [%s]", _auto_tx_check ? "ON" : "OFF"); break;
+      case SG_NAME:    snprintf(buf, len, "%s", _node_prefs->node_name); break;
+      case SG_VER:     snprintf(buf, len, "v%s", FIRMWARE_VERSION); break;
+      default: break;
+    }
+  }
+
+  // Snap _settings_sel onto a selectable row (skip headers / read-only info rows).
+  void clampSettingsSel(const uint8_t* items, int n) {
+    if (n <= 0) { _settings_sel = 0; return; }
+    if (_settings_sel >= n) _settings_sel = n - 1;
+    if (_settings_sel < 0) _settings_sel = 0;
+    if (settingSelectable(items[_settings_sel])) return;
+    for (int i = _settings_sel; i < n; i++) if (settingSelectable(items[i])) { _settings_sel = i; return; }
+    for (int i = _settings_sel; i >= 0; i--) if (settingSelectable(items[i])) { _settings_sel = i; return; }
+  }
+
 public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, SensorManager* sensors, NodePrefs* node_prefs)
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0),
@@ -1068,19 +1185,8 @@ public:
   }
 
   int countSettings() const {
-    int sc = 1 + 1 + 1;  // GMT + Voltage + SNR
-#if ENV_INCLUDE_GPS == 1
-    sc++;  // Speed
-#endif
-    sc += 2;  // Beep + Auto TX
-#if ENV_INCLUDE_GPS == 1
-    sc++;  // Motion
-#endif
-    sc++;  // BLE
-#if ENV_INCLUDE_GPS == 1
-    sc++;  // GPS
-#endif
-    return sc;
+    uint8_t items[32];
+    return buildSettings(items);   // total rows incl. headers; clampSettingsSel snaps to a selectable
   }
 
   bool handleStatusBarKey(char c) {
@@ -3696,56 +3802,33 @@ public:
       display.setColor(DisplayDriver::YELLOW);
       display.drawTextCentered(display.width() / 2, TOP_BAR_H, "-- Settings --");
 
-      // Settings entries: index 0 = GMT offset (special), rest are bool toggles
-      const int max_settings = 10;
-      const char* names[max_settings];
-      bool values[max_settings];
-      bool is_gmt[max_settings];
-      int sc = 0;
-      // GMT offset (special non-bool entry)
-      int id_gmt_render = sc;
-      int id_motion_render = -1;
-      names[sc] = "GMT offset"; values[sc] = false; is_gmt[sc] = true; sc++;
-      names[sc] = "Battery voltage"; values[sc] = _show_voltage; is_gmt[sc] = false; sc++;
-      names[sc] = "Signal bars"; values[sc] = _show_snr; is_gmt[sc] = false; sc++;
-#if ENV_INCLUDE_GPS == 1
-      names[sc] = "Speed HUD"; values[sc] = _show_speed; is_gmt[sc] = false; sc++;
-#endif
-      names[sc] = "Beep w/ BLE"; values[sc] = _beep_on_ble; is_gmt[sc] = false; sc++;
-      names[sc] = "Auto TX check"; values[sc] = _auto_tx_check; is_gmt[sc] = false; sc++;
-#if ENV_INCLUDE_GPS == 1
-      id_motion_render = sc;
-      names[sc] = "Motion mode"; values[sc] = false; is_gmt[sc] = false; sc++;
-#endif
-      names[sc] = "Bluetooth"; values[sc] = _task->isSerialEnabled(); is_gmt[sc] = false; sc++;
-#if ENV_INCLUDE_GPS == 1
-      names[sc] = "GPS"; values[sc] = _task->getGPSState(); is_gmt[sc] = false; sc++;
-#endif
+      uint8_t items[32];
+      int n = buildSettings(items);
+      clampSettingsSel(items, n);
 
-      if (_settings_sel >= sc) _settings_sel = sc - 1;
-
-      int visible = 4;
-      int scroll = 0;
-      if (_settings_sel >= visible) scroll = _settings_sel - visible + 1;
+      const int visible = 4;
+      int scroll = (_settings_sel >= visible) ? (_settings_sel - visible + 1) : 0;
+      if (scroll > n - visible) scroll = (n > visible) ? n - visible : 0;
+      if (scroll < 0) scroll = 0;
 
       int y = TOP_BAR_H + 10;
-      for (int i = scroll; i < scroll + visible && i < sc; i++, y += 10) {
-        bool selected = (i == _settings_sel);
+      for (int i = scroll; i < scroll + visible && i < n; i++, y += 10) {
+        uint8_t id = items[i];
+        if (settingIsHeader(id)) {
+          const char* h = settingHeaderText(id);
+          display.setColor(DisplayDriver::LIGHT);
+          display.setCursor(2, y);
+          display.print(h);
+          display.fillRect(2, y + 8, (int)strlen(h) * 6, 1);  // underline section header
+          continue;
+        }
+        bool selected = (i == _settings_sel) && !_sb_active;
         display.setColor(selected ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
-        if (selected && !_sb_active) {
-          display.setCursor(0, y);
-          display.print(">");
-        }
-        if (is_gmt[i]) {
-          snprintf(tmp, sizeof(tmp), "%s [%s%d]", names[i], _gmt_offset >= 0 ? "+" : "", _gmt_offset);
-        } else if (i == id_motion_render) {
-          const char* mm[] = {"Off", "Auto", "Bike", "Drive"};
-          snprintf(tmp, sizeof(tmp), "%s [%s]", names[i], mm[_motion_mode_setting & 0x03]);
-        } else {
-          snprintf(tmp, sizeof(tmp), "%s [%s]", names[i], values[i] ? "ON" : "OFF");
-        }
+        if (selected) { display.setCursor(0, y); display.print(">"); }
+        formatSettingRow(id, tmp, sizeof(tmp));
         display.drawTextEllipsized(8, y, display.width() - 8, tmp);
       }
+      if (_radio_edit_mode) _needs_fast_refresh = true;  // animate TX-power blink
     } else if (_page == HomePage::SHUTDOWN) {
       display.setColor(DisplayDriver::GREEN);
       display.setTextSize(1);
@@ -5197,28 +5280,44 @@ public:
       }
     }
     if (_page == HomePage::SETTINGS) {
-      int sc = 0;
-      int id_gmt = sc++;
-      int id_voltage = sc++;
-      int id_snr = sc++;
-#if ENV_INCLUDE_GPS == 1
-      int id_speed = sc++;
-#endif
-      int id_beep_ble = sc++;
-      int id_auto_tx = sc++;
-#if ENV_INCLUDE_GPS == 1
-      int id_motion = sc++;
-#endif
-      int id_ble = sc++;
-#if ENV_INCLUDE_GPS == 1
-      int id_gps = sc++;
-#endif
-      if (_settings_sel >= sc) _settings_sel = sc - 1;
+      uint8_t items[32];
+      int n = buildSettings(items);
+      clampSettingsSel(items, n);
+      uint8_t cur = items[_settings_sel];
 
-      if (c == KEY_UP) { if (_settings_sel > 0) _settings_sel--; else enterStatusBar(); return true; }
-      if (c == KEY_DOWN) { if (_settings_sel < sc - 1) _settings_sel++; else enterStatusBar(); return true; }
+      // TX-power edit mode captures all keys while active
+      if (_radio_edit_mode) {
+        const int8_t TX_PWR_MIN = -9;
+        const int8_t TX_PWR_MAX = 22;
+        if (c == KEY_UP || c == KEY_RIGHT) { if (_node_prefs->tx_power_dbm < TX_PWR_MAX) _node_prefs->tx_power_dbm++; return true; }
+        if (c == KEY_DOWN || c == KEY_LEFT) { if (_node_prefs->tx_power_dbm > TX_PWR_MIN) _node_prefs->tx_power_dbm--; return true; }
+        if (c == KEY_ENTER) {
+          radio_set_tx_power(_node_prefs->tx_power_dbm);
+          the_mesh.savePrefs();
+          _radio_edit_mode = false;
+          _task->showAlert("TX power saved", 600);
+          return true;
+        }
+        if (c == KEY_CANCEL) { _node_prefs->tx_power_dbm = _radio_orig_power; _radio_edit_mode = false; return true; }
+        return true;
+      }
+
+      // Navigation skips section headers and read-only info rows
+      if (c == KEY_UP) {
+        int s = _settings_sel - 1;
+        while (s >= 0 && !settingSelectable(items[s])) s--;
+        if (s >= 0) _settings_sel = s; else enterStatusBar();
+        return true;
+      }
+      if (c == KEY_DOWN) {
+        int s = _settings_sel + 1;
+        while (s < n && !settingSelectable(items[s])) s++;
+        if (s < n) _settings_sel = s; else enterStatusBar();
+        return true;
+      }
+
       // GMT offset: LEFT/RIGHT to adjust
-      if (_settings_sel == id_gmt && (c == KEY_LEFT || c == KEY_RIGHT)) {
+      if (cur == SG_GMT && (c == KEY_LEFT || c == KEY_RIGHT)) {
         if (c == KEY_LEFT && _gmt_offset > -12) _gmt_offset--;
         if (c == KEY_RIGHT && _gmt_offset < 14) _gmt_offset++;
         _node_prefs->gmt_offset = _gmt_offset;
@@ -5228,72 +5327,69 @@ public:
         _task->showAlert(alert, 800);
         return true;
       }
+
       if (c == KEY_ENTER) {
-        if (_settings_sel == id_gmt) {
-          // ENTER on GMT: treat same as RIGHT for convenience
-          if (_gmt_offset < 14) _gmt_offset++;
-          _node_prefs->gmt_offset = _gmt_offset;
-          the_mesh.savePrefs();
-          char alert[16];
-          snprintf(alert, sizeof(alert), "GMT: %s%d", _gmt_offset >= 0 ? "+" : "", _gmt_offset);
-          _task->showAlert(alert, 800);
-        } else if (_settings_sel == id_voltage) {
-          _show_voltage = !_show_voltage;
-          _node_prefs->ui_flags = buildUiFlags();
-          the_mesh.savePrefs();
-          _task->showAlert(_show_voltage ? "Voltage: ON" : "Voltage: OFF", 800);
-        } else if (_settings_sel == id_snr) {
-          _show_snr = !_show_snr;
-          _node_prefs->ui_flags = buildUiFlags();
-          the_mesh.savePrefs();
-          _task->showAlert(_show_snr ? "Signal: ON" : "Signal: OFF", 800);
-        }
+        switch (cur) {
+          case SG_VOLTAGE:
+            _show_voltage = !_show_voltage; _node_prefs->ui_flags = buildUiFlags(); the_mesh.savePrefs();
+            _task->showAlert(_show_voltage ? "Voltage: ON" : "Voltage: OFF", 800);
+            break;
+          case SG_SIGNAL:
+            _show_snr = !_show_snr; _node_prefs->ui_flags = buildUiFlags(); the_mesh.savePrefs();
+            _task->showAlert(_show_snr ? "Signal: ON" : "Signal: OFF", 800);
+            break;
 #if ENV_INCLUDE_GPS == 1
-        else if (_settings_sel == id_speed) {
-          _show_speed = !_show_speed;
-          _node_prefs->ui_flags = buildUiFlags();
-          the_mesh.savePrefs();
-          _task->showAlert(_show_speed ? "Speed: ON" : "Speed: OFF", 800);
-        }
+          case SG_SPEED:
+            _show_speed = !_show_speed; _node_prefs->ui_flags = buildUiFlags(); the_mesh.savePrefs();
+            _task->showAlert(_show_speed ? "Speed: ON" : "Speed: OFF", 800);
+            break;
 #endif
-        else if (_settings_sel == id_beep_ble) {
-          _beep_on_ble = !_beep_on_ble;
-          _node_prefs->ui_flags = buildUiFlags();
-          the_mesh.savePrefs();
-          _task->showAlert(_beep_on_ble ? "Beep w/ BLE: ON" : "Beep w/ BLE: OFF", 800);
-        }
-        else if (_settings_sel == id_auto_tx) {
-          _auto_tx_check = !_auto_tx_check;
-          _task->_auto_tx_enabled = _auto_tx_check;
-          _node_prefs->ui_flags = buildUiFlags();
-          the_mesh.savePrefs();
-          _task->showAlert(_auto_tx_check ? "Auto TX: ON" : "Auto TX: OFF", 800);
-        }
+          case SG_GMT:
+            if (_gmt_offset < 14) _gmt_offset++;
+            _node_prefs->gmt_offset = _gmt_offset; the_mesh.savePrefs();
+            { char a[16]; snprintf(a, sizeof(a), "GMT: %s%d", _gmt_offset >= 0 ? "+" : "", _gmt_offset); _task->showAlert(a, 800); }
+            break;
+#ifdef PIN_BUZZER
+          case SG_BUZZER:
+            _task->toggleBuzzer();
+            break;
+#endif
+          case SG_BEEP:
+            _beep_on_ble = !_beep_on_ble; _node_prefs->ui_flags = buildUiFlags(); the_mesh.savePrefs();
+            _task->showAlert(_beep_on_ble ? "Beep w/ BLE: ON" : "Beep w/ BLE: OFF", 800);
+            break;
+          case SG_TXPOWER:
+            _radio_orig_power = _node_prefs->tx_power_dbm; _radio_edit_mode = true;
+            break;
 #if ENV_INCLUDE_GPS == 1
-        else if (_settings_sel == id_motion) {
-          _motion_mode_setting = (_motion_mode_setting + 1) & 0x03;
-          _task->_motion_mode = _motion_mode_setting;
-          _node_prefs->ui_flags = buildUiFlags();
-          the_mesh.savePrefs();
-          const char* mm[] = {"Off", "Auto", "Bike", "Drive"};
-          if (_motion_mode_setting == 1 && !_task->getGPSState()) {
-            _task->showAlert("Auto needs GPS", 1200);
-          } else {
-            char alert[24];
-            snprintf(alert, sizeof(alert), "Motion: %s", mm[_motion_mode_setting & 0x03]);
-            _task->showAlert(alert, 800);
-          }
-        }
+          case SG_GPS:
+            _task->toggleGPS();
+            break;
+          case SG_MOTION: {
+            _motion_mode_setting = (_motion_mode_setting + 1) & 0x03;
+            _task->_motion_mode = _motion_mode_setting;
+            _node_prefs->ui_flags = buildUiFlags(); the_mesh.savePrefs();
+            const char* mm[] = {"Off", "Auto", "Bike", "Drive"};
+            if (_motion_mode_setting == 1 && !_task->getGPSState()) {
+              _task->showAlert("Auto needs GPS", 1200);
+            } else {
+              char a[24]; snprintf(a, sizeof(a), "Motion: %s", mm[_motion_mode_setting & 0x03]); _task->showAlert(a, 800);
+            }
+          } break;
 #endif
-        else if (_settings_sel == id_ble) {
-          if (_task->isSerialEnabled()) _task->disableSerial();
-          else _task->enableSerial();
+          case SG_BLE:
+            if (_task->isSerialEnabled()) _task->disableSerial(); else _task->enableSerial();
+            break;
+          case SG_AUTOTX:
+            _auto_tx_check = !_auto_tx_check; _task->_auto_tx_enabled = _auto_tx_check;
+            _node_prefs->ui_flags = buildUiFlags(); the_mesh.savePrefs();
+            _task->showAlert(_auto_tx_check ? "Auto TX: ON" : "Auto TX: OFF", 800);
+            break;
+          default:
+            // read-only info rows (freq/SF/BW/CR/name/version): editable via companion app
+            _task->showAlert("Set via app", 800);
+            break;
         }
-#if ENV_INCLUDE_GPS == 1
-        else if (_settings_sel == id_gps) {
-          _task->toggleGPS();
-        }
-#endif
         return true;
       }
       if (c == KEY_CANCEL) {
