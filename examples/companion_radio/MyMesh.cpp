@@ -520,6 +520,20 @@ int MyMesh::sendPing(const ContactInfo& contact, uint32_t& est_timeout) {
   return 1;  // non-zero = success (MSG_SEND_FAILED is 0)
 }
 
+int MyMesh::lookupUniqueContact(const uint8_t* prefix, uint8_t len, ContactInfo& out) {
+  if (prefix == NULL || len == 0) return 0;
+  int matches = 0;
+  int n = getNumContacts();
+  ContactInfo ci;
+  for (int i = 0; i < n; i++) {
+    if (getContactByIdx(i, ci) && memcmp(ci.id.pub_key, prefix, len) == 0) {
+      out = ci;
+      if (++matches >= 2) break;  // ambiguous — no need to keep counting
+    }
+  }
+  return matches;
+}
+
 void MyMesh::startDiscoveryScan(uint32_t tag) {
   ui_discover_tag = tag;
   uint8_t data[6];

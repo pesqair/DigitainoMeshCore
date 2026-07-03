@@ -106,6 +106,10 @@ public:
   int sendStatusReq(const ContactInfo& contact, uint32_t& est_timeout);
   int sendPing(const ContactInfo& contact, uint32_t& est_timeout);
   void startDiscoveryScan(uint32_t tag);
+  // Returns how many contacts match the given pub_key prefix (counting stops at 2,
+  // so 2 means "2 or more"); fills 'out' when the match is unique. The ping engine
+  // uses this so a short hash prefix can't silently resolve to the wrong same-prefix node.
+  int lookupUniqueContact(const uint8_t* prefix, uint8_t len, ContactInfo& out);
 
 protected:
   float getAirtimeBudgetFactor() const override;

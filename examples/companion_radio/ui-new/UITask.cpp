@@ -6953,10 +6953,23 @@ void UITask::loop() {
 
     if (!user_ping_active) {
       uint8_t hash = _auto_ping_queue[_auto_ping_next];
-      ContactInfo* ci = the_mesh.lookupContactByPubKey(&hash, 1);
-      if (ci) {
+      // Resolve the queued 1-byte id to its signal entry, then look the contact up by
+      // the FULL captured hash (id_hash/id_len). A bare 1-byte prefix can resolve to the
+      // wrong same-prefix contact (e.g. two repeaters both starting 0xAB), so require a
+      // UNIQUE match — if the prefix is ambiguous or unknown, don't ping a guessed node.
+      const uint8_t* key = &hash;
+      uint8_t klen = 1;
+      for (uint8_t i = 0; i < _signal_count; i++) {
+        if (_signals[i].id == hash) {
+          if (_signals[i].id_len >= 1) { key = _signals[i].id_hash; klen = _signals[i].id_len; }
+          break;
+        }
+      }
+      ContactInfo ci;
+      int matches = the_mesh.lookupUniqueContact(key, klen, ci);
+      if (matches == 1) {
         uint32_t est_timeout;
-        int result = the_mesh.sendPing(*ci, est_timeout);
+        int result = the_mesh.sendPing(ci, est_timeout);
         if (result != MSG_SEND_FAILED) {
           _auto_ping_pending = true;
           _auto_ping_current_id = hash;
@@ -6983,7 +6996,8 @@ void UITask::loop() {
           _auto_ping_next_time = millis() + 1000;
         }
       } else {
-        // Repeater not in contacts — mark tx_failed on signal entry
+        // No unique contact for this hash — either unknown, or an ambiguous same-prefix
+        // ID we can't safely disambiguate. Mark the entry so it isn't retried tightly.
         for (uint8_t i = 0; i < _signal_count; i++) {
           if (_signals[i].id == hash) {
             _signals[i].tx_failed = true;
@@ -6993,7 +7007,7 @@ void UITask::loop() {
           }
         }
         if (_manual_ping_id == hash) {
-          showAlert("Ping: no contact", 1200);
+          showAlert(matches == 0 ? "Ping: no contact" : "Ping: ambiguous ID", 1200);
           _manual_ping_id = 0;
         }
         _auto_ping_next++;
