@@ -6760,7 +6760,8 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
   hs->_ct_ping_snr_back = snr_back;
 
   // Update (or create) this repeater's entry with both TX+RX — don't wipe the
-  // other tracked repeaters
+  // other tracked repeaters. We know the pinged contact's full pub_key, so store up to
+  // 3 bytes: that keeps the entry unambiguous vs another repeater with the same 1st byte.
   uint8_t repeater_id = hs->_ct_path_key[0];
   int idx = -1;
   for (int i = 0; i < _signal_count; i++) {
@@ -6776,7 +6777,9 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
       }
     }
     memset(&_signals[idx], 0, sizeof(_signals[idx]));
-    setSignalHash(_signals[idx], &repeater_id, 1);
+    setSignalHash(_signals[idx], hs->_ct_path_key, 3);
+  } else if (_signals[idx].id_len < 3) {
+    setSignalHash(_signals[idx], hs->_ct_path_key, 3);  // enrich a short/1-byte entry
   }
   _signals[idx].tx_snr_x4 = (int8_t)(snr_there * 4);
   _signals[idx].has_tx = true;
@@ -6802,16 +6805,19 @@ void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, 
   // Signal probe mode: collect repeaters for auto-ping
   if (_probe_active && node_type == ADV_TYPE_REPEATER && pub_key_len >= 1) {
     uint8_t id = pub_key[0];
-    // Dedup against existing _signals[] entries
-    bool dup = false;
+    // Discovery carries the repeater's full pub_key, so store up to 3 bytes (not the
+    // path's hash size). That lets the signal entry be told apart from another repeater
+    // sharing the same first byte — otherwise a 1-byte entry is ambiguous and unpingable.
+    uint8_t dhsz = pub_key_len >= 3 ? 3 : (pub_key_len >= 1 ? pub_key_len : 1);
+    // Find existing entry (keyed by first byte)
+    int existing = -1;
     for (int i = 0; i < _signal_count; i++) {
-      if (_signals[i].id == id) { dup = true; break; }
+      if (_signals[i].id == id) { existing = i; break; }
     }
-    if (!dup && _signal_count < SIGNAL_MAX && _auto_ping_queue_count < AUTO_PING_QUEUE_MAX) {
-      uint8_t dhsz = (uint8_t)((path_len >> 6) + 1);   // hash size from encoded path_len
-      if (dhsz > pub_key_len) dhsz = pub_key_len;
-      if (dhsz > 3) dhsz = 3;
-      if (dhsz < 1) dhsz = 1;
+    if (existing >= 0) {
+      // Enrich the stored hash if discovery now gives us more bytes than before
+      if (dhsz > _signals[existing].id_len) setSignalHash(_signals[existing], pub_key, dhsz);
+    } else if (_signal_count < SIGNAL_MAX && _auto_ping_queue_count < AUTO_PING_QUEUE_MAX) {
       setSignalHash(_signals[_signal_count], pub_key, dhsz);
       _signals[_signal_count].rx_snr_x4 = snr_x4;
       _signals[_signal_count].has_rx = true;
@@ -7057,7 +7063,10 @@ void UITask::loop() {
           }
         }
         if (_manual_ping_id == hash) {
-          showAlert(matches == 0 ? "Ping: no contact" : "Ping: ambiguous ID", 1200);
+          // Ambiguous: kick a discovery probe to enrich this entry's hash (discovery
+          // carries the full pub_key), so a retry can pin the repeater down.
+          if (matches >= 2) { showAlert("Resolving repeater...", 1200); requestSignalProbe(); }
+          else              { showAlert("Ping: no contact", 1200); }
           _manual_ping_id = 0;
         }
         _auto_ping_next++;
