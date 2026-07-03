@@ -171,6 +171,9 @@ protected:
 public:
   void savePrefs() { _store->savePrefs(_prefs, sensors.node_lat, sensors.node_lon); }
   const uint8_t* getLastSentHash() const { return _last_sent_hash; }
+  // Wraps sendMessage(), clearing _last_sent_hash first so direct-path sends
+  // (which bypass the sendFloodScoped hooks) can't inherit a stale hash.
+  int sendMessageTracked(const ContactInfo& recipient, uint32_t timestamp, uint8_t attempt, const char* text, uint32_t& expected_ack, uint32_t& est_timeout);
   void registerExpectedAck(uint32_t ack, ContactInfo* contact);
   void queueSentChannelMessage(int channel_idx, uint32_t timestamp, const char* text, int text_len);
   void queueSentDirectMessage(const ContactInfo& recipient, uint32_t timestamp, const char* text);

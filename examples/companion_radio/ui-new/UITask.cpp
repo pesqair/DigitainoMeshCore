@@ -3168,23 +3168,11 @@ public:
           display.setColor(DisplayDriver::LIGHT);
           display.drawTextCentered(display.width() / 2, TOP_BAR_H + 22, "No signals yet");
         } else {
-          // Sort by signal quality (best first)
+          // Sort by the shared canonical order (best first) — matches the app + status bar
           for (int i = 1; i < _task->_signal_count; i++) {
             AbstractUITask::SignalEntry tmp_se = _task->_signals[i];
             int j = i - 1;
-            while (j >= 0) {
-              AbstractUITask::SignalEntry& sj = _task->_signals[j];
-              bool cur_bidi = tmp_se.has_rx && tmp_se.has_tx;
-              bool cmp_bidi = sj.has_rx && sj.has_tx;
-              bool swap = false;
-              if (cur_bidi && !cmp_bidi) {
-                swap = true;
-              } else if (cur_bidi == cmp_bidi) {
-                int8_t cur_snr = cur_bidi ? min(tmp_se.rx_snr_x4, tmp_se.tx_snr_x4) : tmp_se.rx_snr_x4;
-                int8_t cmp_snr = cmp_bidi ? min(sj.rx_snr_x4, sj.tx_snr_x4) : sj.rx_snr_x4;
-                if (cur_snr > cmp_snr) swap = true;
-              }
-              if (!swap) break;
+            while (j >= 0 && _task->signalRanksAbove(tmp_se, _task->_signals[j])) {
               _task->_signals[j + 1] = _task->_signals[j];
               j--;
             }
@@ -4833,6 +4821,11 @@ public:
           // Resend: sent message with no heard repeats and not delivered
           if (entry.is_sent && entry.heard_repeats == 0 && !entry.delivered) {
             bool resent = false;
+            // Strip any old TX marker BEFORE resending, so "(TX: #n)" never goes over the air
+            {
+              char* marker = strstr(entry.text, " (TX:");
+              if (marker) *marker = '\0';
+            }
             if (entry.channel_idx < 0 && entry.contact_name[0] != '\0') {
               // DM resend
               ContactInfo ci;
@@ -4842,7 +4835,7 @@ public:
                   uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
                   uint32_t expected_ack = 0;
                   uint32_t est_timeout = 0;
-                  the_mesh.sendMessage(ci, ts, 0, entry.text, expected_ack, est_timeout);
+                  the_mesh.sendMessageTracked(ci, ts, 0, entry.text, expected_ack, est_timeout);
                   the_mesh.registerExpectedAck(expected_ack, NULL);
                   entry.expected_ack = expected_ack;
                   entry.delivered = false;
@@ -4869,9 +4862,6 @@ public:
             }
             if (resent) {
               entry.tx_count++;
-              // Strip old TX marker if present, then append new one
-              char* marker = strstr(entry.text, " (TX:");
-              if (marker) *marker = '\0';
               int tlen = strlen(entry.text);
               snprintf(entry.text + tlen, sizeof(entry.text) - tlen, " (TX: #%d)", entry.tx_count);
               memcpy(entry.packet_hash, the_mesh.getLastSentHash(), MAX_HASH_SIZE);
@@ -4975,7 +4965,7 @@ public:
                     uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
                     uint32_t expected_ack = 0;
                     uint32_t est_timeout = 0;
-                    int result = the_mesh.sendMessage(ci, ts, 0, text, expected_ack, est_timeout);
+                    int result = the_mesh.sendMessageTracked(ci, ts, 0, text, expected_ack, est_timeout);
                     the_mesh.registerExpectedAck(expected_ack, NULL);
                     _task->addToMsgLog("You", text, true, 0, -1, ci.name, NULL, the_mesh.getLastSentHash(), expected_ack);
                     _task->notify(UIEventType::ack);
@@ -5765,7 +5755,7 @@ public:
             uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
             uint32_t expected_ack = 0;
             uint32_t est_timeout = 0;
-            int result = the_mesh.sendMessage(_dm_contact, ts, 0, _compose_buf, expected_ack, est_timeout);
+            int result = the_mesh.sendMessageTracked(_dm_contact, ts, 0, _compose_buf, expected_ack, est_timeout);
             the_mesh.registerExpectedAck(expected_ack, NULL);
             // Note: DM sync to companion app not supported - protocol has no outgoing flag
             _task->addToMsgLog("You", _compose_buf, true, 0, -1, _dm_contact.name, NULL, the_mesh.getLastSentHash(), expected_ack);
@@ -6281,7 +6271,7 @@ void UITask::sendGPSDM(const ContactInfo& contact) {
     uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
     uint32_t expected_ack = 0;
     uint32_t est_timeout = 0;
-    int result = the_mesh.sendMessage(contact, ts, 0, gps_text, expected_ack, est_timeout);
+    int result = the_mesh.sendMessageTracked(contact, ts, 0, gps_text, expected_ack, est_timeout);
     the_mesh.registerExpectedAck(expected_ack, NULL);
     // Note: DM sync to companion app not supported - protocol has no outgoing flag
     addToMsgLog("You", gps_text, true, 0, -1, contact.name, NULL, the_mesh.getLastSentHash(), expected_ack);
@@ -6329,7 +6319,7 @@ void UITask::sendPresetDM(const ContactInfo& contact) {
   uint32_t ts = the_mesh.getRTCClock()->getCurrentTimeUnique();
   uint32_t expected_ack = 0;
   uint32_t est_timeout = 0;
-  int result = the_mesh.sendMessage(contact, ts, 0, _pending_preset, expected_ack, est_timeout);
+  int result = the_mesh.sendMessageTracked(contact, ts, 0, _pending_preset, expected_ack, est_timeout);
   the_mesh.registerExpectedAck(expected_ack, NULL);
   addToMsgLog("You", _pending_preset, true, 0, -1, contact.name, NULL, the_mesh.getLastSentHash(), expected_ack);
   notify(UIEventType::ack);
@@ -6530,7 +6520,7 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
         }
         if (idx < 0 && _signal_count < SIGNAL_MAX) {
           idx = _signal_count++;
-          _signals[idx].id = rid;
+          setSignalHash(_signals[idx], &entry.repeat_path[r * hash_size], hash_size);
           _signals[idx].has_tx = false;
           _signals[idx].tx_failed = false;
           _signals[idx].tx_snr_x4 = 0;
@@ -6555,12 +6545,13 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
       bool was_empty = (_auto_ping_queue_count == 0);
       for (int r = 0; r < entry.repeat_path_len && _auto_ping_queue_count < AUTO_PING_QUEUE_MAX; r++) {
         if (entry.repeat_path_snr_x4[r] != 0) {
+          uint8_t rid = entry.repeat_path[r * hash_size];  // first byte of this entry's hash
           bool dup = false;
           for (int q = 0; q < _auto_ping_queue_count; q++) {
-            if (_auto_ping_queue[q] == entry.repeat_path[r]) { dup = true; break; }
+            if (_auto_ping_queue[q] == rid) { dup = true; break; }
           }
           if (!dup) {
-            _auto_ping_queue[_auto_ping_queue_count++] = entry.repeat_path[r];
+            _auto_ping_queue[_auto_ping_queue_count++] = rid;
           }
         }
       }
@@ -6687,20 +6678,36 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
   hs->_ct_ping_snr_there = snr_there;
   hs->_ct_ping_snr_back = snr_back;
 
-  // Create single entry with both TX+RX
+  // Update (or create) this repeater's entry with both TX+RX — don't wipe the
+  // other tracked repeaters
   uint8_t repeater_id = hs->_ct_path_key[0];
-  _signals[0].id = repeater_id;
-  _signals[0].tx_snr_x4 = (int8_t)(snr_there * 4);
-  _signals[0].has_tx = true;
-  _signals[0].tx_count = 1;
-  _signals[0].last_rtt_ms = latency_ms;
-  _signals[0].rx_snr_x4 = (int8_t)(snr_back * 4);
-  _signals[0].has_rx = true;
-  _signals[0].rx_count = 1;
-  _signal_count = 1;
+  int idx = -1;
+  for (int i = 0; i < _signal_count; i++) {
+    if (_signals[i].id == repeater_id) { idx = i; break; }
+  }
+  if (idx < 0) {
+    if (_signal_count < SIGNAL_MAX) {
+      idx = _signal_count++;
+    } else {
+      idx = 0;  // table full — evict oldest
+      for (int i = 1; i < _signal_count; i++) {
+        if (_signals[i].last_heard < _signals[idx].last_heard) idx = i;
+      }
+    }
+    memset(&_signals[idx], 0, sizeof(_signals[idx]));
+    setSignalHash(_signals[idx], &repeater_id, 1);
+  }
+  _signals[idx].tx_snr_x4 = (int8_t)(snr_there * 4);
+  _signals[idx].has_tx = true;
+  _signals[idx].tx_failed = false;
+  _signals[idx].fail_count = 0;
+  _signals[idx].tx_count++;
+  _signals[idx].last_rtt_ms = latency_ms;
+  _signals[idx].rx_snr_x4 = (int8_t)(snr_back * 4);
+  _signals[idx].has_rx = true;
+  _signals[idx].rx_count++;
+  _signals[idx].last_heard = millis();
   _signal_time = millis();
-  _signal_cycle = 0;
-  _signal_cycle_time = millis();
   // Also update live RX
   _last_rx_id = repeater_id;
   _last_rx_snr_x4 = (int8_t)(snr_back * 4);
@@ -6720,7 +6727,11 @@ void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, 
       if (_signals[i].id == id) { dup = true; break; }
     }
     if (!dup && _signal_count < SIGNAL_MAX && _auto_ping_queue_count < AUTO_PING_QUEUE_MAX) {
-      _signals[_signal_count].id = id;
+      uint8_t dhsz = (uint8_t)((path_len >> 6) + 1);   // hash size from encoded path_len
+      if (dhsz > pub_key_len) dhsz = pub_key_len;
+      if (dhsz > 3) dhsz = 3;
+      if (dhsz < 1) dhsz = 1;
+      setSignalHash(_signals[_signal_count], pub_key, dhsz);
       _signals[_signal_count].rx_snr_x4 = snr_x4;
       _signals[_signal_count].has_rx = true;
       _signals[_signal_count].tx_snr_x4 = 0;
@@ -6759,7 +6770,7 @@ void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, 
   sr.node_type = node_type;
   sr.snr_x4 = snr_x4;
   sr.rssi = rssi;
-  sr.path_len = path_len;
+  sr.path_len = path_len & 0x3F;  // decode hop count (top 2 bits of the raw byte = hash size)
   int copy_len = pub_key_len < PUB_KEY_SIZE ? pub_key_len : PUB_KEY_SIZE;
   memcpy(sr.pub_key, pub_key, copy_len);
 
@@ -7082,6 +7093,12 @@ void UITask::loop() {
     } else if (_signal_count == 0) {
       showAlert("No repeaters found", 1500);
     }
+  }
+
+  // Companion-app explicit signal-probe request (circle-arrow refresh in the app)
+  if (_ext_probe_request) {
+    _ext_probe_request = false;
+    if (!_probe_active && !_auto_ping_pending) startSignalProbe(true);
   }
 
   // Auto-trigger signal probe when signal data goes stale (5 min)

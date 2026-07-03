@@ -55,7 +55,9 @@ public:
   // Unified per-repeater signal display (status bar)
   #define SIGNAL_MAX 8
   struct SignalEntry {
-    uint8_t id;         // 1-byte repeater hash
+    uint8_t id;          // match/ping key = first byte of the advertised hash
+    uint8_t id_hash[4];  // full advertised repeater hash for display (1-4 bytes)
+    uint8_t id_len = 0;  // # valid bytes in id_hash; 0 => fall back to 1-byte id
     int8_t rx_snr_x4;   // RX: how well we hear them (from retransmission)
     int8_t tx_snr_x4;   // TX: how well they hear us (from ping snr_there)
     bool has_rx;         // RX data available
@@ -124,6 +126,16 @@ public:
     return (_phone_motion_level == 1) ? 2 : 4;
   }
 
+  // Store a repeater's advertised hash (for multi-byte display) while keeping `id` =
+  // first byte as the match/ping key. null/len 0 falls back to the 1-byte id.
+  void setSignalHash(SignalEntry& e, const uint8_t* hash, uint8_t len) {
+    if (hash == nullptr || len == 0) { e.id_hash[0] = e.id; e.id_len = 1; return; }
+    if (len > 4) len = 4;
+    for (uint8_t k = 0; k < len; k++) e.id_hash[k] = hash[k];
+    e.id_len = len;
+    e.id = hash[0];
+  }
+
   // ----- Unified signal-bar scoring (shared by OLED + companion app) -----
   // Score in snr_x4 units. Bidirectional links: 0.6*TX + 0.4*RX, but if either
   // leg is <= -10 dB (-40 in x4) the link is ranked by its dead leg (weak-leg guard).
@@ -156,29 +168,56 @@ public:
     return best;
   }
 
-  // Serialize the live signal table for SYNC_ID_SIGNAL_BARS (radio -> app).
+  // True if `a` should rank above `b` in the signal list: bidirectional links first,
+  // then strongest by signalScore. The single canonical ordering shared by the OLED
+  // Signals page, the serialized blob, and (mirrored) the companion app.
+  bool signalRanksAbove(const SignalEntry& a, const SignalEntry& b) const {
+    bool a_bidi = a.has_rx && a.has_tx;
+    bool b_bidi = b.has_rx && b.has_tx;
+    if (a_bidi != b_bidi) return a_bidi;
+    return signalScore(a) > signalScore(b);
+  }
+
+  // Serialize the live signal table for SYNC_ID_SIGNAL_BARS (radio -> app), already in
+  // canonical display order (best first) so the app mirrors the OLED without re-sorting.
   // Layout: [ver=1][count] then count x { id, rx_x4, tx_x4, flags, age_s(LE), rtt_ms(LE) }
   // flags: bit0 has_rx, bit1 has_tx, bit2 tx_failed, bit3 is_best.
   uint16_t serializeSignalBars(uint8_t* out, uint16_t max) {
     _last_signal_poll = millis();   // record that a companion app is reading the table
     if (max < 2) return 0;
-    int best = pickBestSignal();
     uint8_t count = _signal_count;
-    if ((uint16_t)(2 + count * 8) > max) count = (uint8_t)((max - 2) / 8);
+    if ((uint16_t)(2 + count * 11) > max) count = (uint8_t)((max - 2) / 11);
+
+    // Sort an index copy (never mutate the live _signals[]) into canonical order.
+    uint8_t order[SIGNAL_MAX];
+    for (uint8_t k = 0; k < _signal_count; k++) order[k] = k;
+    for (int a = 1; a < (int)_signal_count; a++) {
+      uint8_t key = order[a];
+      int b = a - 1;
+      while (b >= 0 && signalRanksAbove(_signals[key], _signals[order[b]])) {
+        order[b + 1] = order[b]; b--;
+      }
+      order[b + 1] = key;
+    }
+
     uint16_t i = 0;
-    out[i++] = 1;       // version
+    out[i++] = 2;       // version 2: per-entry { id_len, h0,h1,h2, rx, tx, flags, age(2), rtt(2) }
     out[i++] = count;
     unsigned long now = millis();
     for (uint8_t e = 0; e < count; e++) {
-      const SignalEntry& s = _signals[e];
-      out[i++] = s.id;
+      const SignalEntry& s = _signals[order[e]];
+      uint8_t hl = (s.id_len >= 1 && s.id_len <= 3) ? s.id_len : 1;
+      out[i++] = hl;
+      out[i++] = (s.id_len >= 1) ? s.id_hash[0] : s.id;
+      out[i++] = (hl >= 2) ? s.id_hash[1] : 0;
+      out[i++] = (hl >= 3) ? s.id_hash[2] : 0;
       out[i++] = (uint8_t)s.rx_snr_x4;
       out[i++] = (uint8_t)s.tx_snr_x4;
       uint8_t flags = 0;
-      if (s.has_rx)       flags |= 0x01;
-      if (s.has_tx)       flags |= 0x02;
-      if (s.tx_failed)    flags |= 0x04;
-      if ((int)e == best) flags |= 0x08;
+      if (s.has_rx)    flags |= 0x01;
+      if (s.has_tx)    flags |= 0x02;
+      if (s.tx_failed) flags |= 0x04;
+      if (e == 0)      flags |= 0x08;   // best repeater is first after the sort
       out[i++] = flags;
       unsigned long age = (now - s.last_heard) / 1000UL;
       uint16_t age16 = (age > 65535UL) ? 65535 : (uint16_t)age;
@@ -190,6 +229,12 @@ public:
     }
     return i;
   }
+
+  // Companion-app trigger: start a discovery probe (find new repeaters). The UITask
+  // loop picks up this flag and calls startSignalProbe(); the auto-ping engine then
+  // measures TX for any newly-found repeaters.
+  bool _ext_probe_request = false;
+  void requestSignalProbe() { _ext_probe_request = true; }
 
   // Companion-app or device-UI trigger: re-ping repeater(s) now via the auto-ping queue.
   // target_id != 0 pings just that repeater; 0 re-pings all tracked repeaters.
@@ -218,7 +263,7 @@ public:
     _auto_ping_next_time = millis() + 200;
   }
 
-  virtual void onRxPacket(uint8_t first_path_byte, int16_t rssi, int8_t snr_x4) {
+  virtual void onRxPacket(uint8_t first_path_byte, const uint8_t* hash, uint8_t hash_len, int16_t rssi, int8_t snr_x4) {
     _probe_done = false;
     _last_rx_id = first_path_byte; _last_rx_time = millis(); _last_rx_rssi = rssi; _last_rx_snr_x4 = snr_x4;
     if (first_path_byte == 0) return;  // direct packet, no repeater
@@ -234,7 +279,7 @@ public:
       return;
     } else if (idx < 0 && _signal_count < SIGNAL_MAX) {
       idx = _signal_count++;
-      _signals[idx].id = first_path_byte;
+      setSignalHash(_signals[idx], hash, hash_len);
       _signals[idx].has_tx = false;
       _signals[idx].tx_failed = false;
       _signals[idx].tx_snr_x4 = 0;
@@ -254,7 +299,7 @@ public:
         if (_signals[i].last_heard < _signals[oldest].last_heard) oldest = i;
       }
       idx = oldest;
-      _signals[idx].id = first_path_byte;
+      setSignalHash(_signals[idx], hash, hash_len);
       _signals[idx].has_tx = false;
       _signals[idx].tx_failed = false;
       _signals[idx].tx_snr_x4 = 0;
@@ -272,6 +317,7 @@ public:
       _signals[idx].rx_snr_x4 = (int8_t)((_signals[idx].rx_snr_x4 * 3 + snr_x4) / 4);
       _signals[idx].last_heard = millis();
       _signals[idx].rx_count++;
+      setSignalHash(_signals[idx], hash, hash_len);  // refresh advertised hash/size
     }
     _signal_time = millis();
 

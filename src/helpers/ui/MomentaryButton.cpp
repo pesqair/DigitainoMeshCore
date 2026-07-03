@@ -70,10 +70,17 @@ int MomentaryButton::check(bool repeat_click) {
   int event = BUTTON_EVENT_NONE;
   int btn = _threshold > 0 ? (analogRead(_pin) < _threshold) : digitalRead(_pin);
   if (btn != prev) {
-    if (_last_transition > 0 && (millis() - _last_transition) < 30) {
-      return event;  // debounce: ignore transitions within 30ms
+    // Debounce: only commit a state change once it has been stable for 30ms.
+    // (Accepting the first edge immediately would turn a short noise pulse into a click.)
+    if (_last_transition == 0) {
+      unsigned long now = millis();
+      _last_transition = now ? now : 1;  // start stability window (avoid 0 sentinel)
+      return event;
     }
-    _last_transition = millis();
+    if ((millis() - _last_transition) < 30) {
+      return event;  // still settling
+    }
+    _last_transition = 0;
     if (isPressed(btn)) {
       down_at = millis();
     } else {
@@ -98,6 +105,8 @@ int MomentaryButton::check(bool repeat_click) {
       down_at = 0;
     }
     prev = btn;
+  } else {
+    _last_transition = 0;   // reading matches committed state — cancel any pending debounce window
   }
   if (!isPressed(btn) && cancel) {   // always clear the pending 'cancel' once button is back in UP state
     cancel = 0;

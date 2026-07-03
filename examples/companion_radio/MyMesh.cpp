@@ -328,21 +328,21 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
     uint16_t path_bytes = (uint16_t)hop_count * hash_size;
     if (i + path_bytes > len) return;
     const uint8_t* path = &raw[i];
+    uint8_t payload_type = (header >> PH_TYPE_SHIFT) & PH_TYPE_MASK;
     // Track last-hop hash and signal for status bar display
     // Use first byte of the last hop's hash = the node we received directly from
+    // NOTE: TRACE packets carry SNR bytes in path[], not repeater hashes, so treat them as direct
     int16_t rx_rssi = (int16_t)rssi;
     int8_t rx_snr_x4 = (int8_t)(snr * 4.0f);
-    if (hop_count > 0) {
-      _ui->onRxPacket(path[(hop_count - 1) * hash_size], rx_rssi, rx_snr_x4);
+    if (hop_count > 0 && payload_type != PAYLOAD_TYPE_TRACE) {
+      const uint8_t* last_hop = &path[(hop_count - 1) * hash_size];
+      _ui->onRxPacket(last_hop[0], last_hop, hash_size, rx_rssi, rx_snr_x4);
     } else {
-      _ui->onRxPacket(0, rx_rssi, rx_snr_x4);  // direct packet, no relay ID
+      _ui->onRxPacket(0, nullptr, 0, rx_rssi, rx_snr_x4);  // direct packet, no relay ID
     }
     i += path_bytes;
     int payload_len = len - i;
     if (payload_len <= 0) return;
-
-    // Compute hash the same way as Packet::calculatePacketHash
-    uint8_t payload_type = (header >> PH_TYPE_SHIFT) & PH_TYPE_MASK;
 
     // Detect ping (trace) response
     if (payload_type == PAYLOAD_TYPE_TRACE && ui_pending_ping_tag != 0 && payload_len >= 9) {
@@ -554,6 +554,16 @@ void MyMesh::onContactPathUpdated(const ContactInfo &contact) {
   }
 }
 
+int MyMesh::sendMessageTracked(const ContactInfo& recipient, uint32_t timestamp, uint8_t attempt, const char* text, uint32_t& expected_ack, uint32_t& est_timeout) {
+  // Direct sends go through the non-virtual sendDirect(), which does not refresh
+  // _last_sent_hash. Clear it first so a direct send can't inherit the hash of an
+  // earlier flood send (which would misattribute heard repeats in the message log).
+  memset(_last_sent_hash, 0, sizeof(_last_sent_hash));
+  int result = sendMessage(recipient, timestamp, attempt, text, expected_ack, est_timeout);
+  if (result != MSG_SEND_FAILED && _ui) _ui->_last_tx_time = millis();
+  return result;
+}
+
 void MyMesh::registerExpectedAck(uint32_t ack, ContactInfo* contact) {
   if (ack == 0) return;
   expected_ack_table[next_ack_idx].msg_sent = _ms->getMillis();
@@ -723,10 +733,6 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
     uint8_t frame[1];
     frame[0] = PUSH_CODE_MSG_WAITING; // send push 'tickle'
     _serial->writeFrame(frame, 1);
-  } else {
-#ifdef DISPLAY_CLASS
-    if (_ui && shouldNotifyForChannel(channel_idx, text)) _ui->notify(UIEventType::channelMessage);
-#endif
   }
 #ifdef DISPLAY_CLASS
   // Get the channel name from the channel index
@@ -988,8 +994,8 @@ void MyMesh::onContactResponse(const ContactInfo &contact, const uint8_t *data, 
     _ui->onTelemetryResponse(contact, voltage, temperature, telem_lat, telem_lon);
   }
 
-  // Check for UI-initiated status response
-  if (_ui && len > 4 + 20 && ui_pending_status &&
+  // Check for UI-initiated status response (need batt_mv at 0 and uptime at 20..23 of RepeaterStats)
+  if (_ui && len >= 4 + 24 && ui_pending_status &&
       memcmp(&ui_pending_status, contact.id.pub_key, 4) == 0) {
     ui_pending_status = 0;
     // Parse RepeaterStats: batt_mv at offset 0, uptime at offset 20 (relative to data+4)
@@ -1459,7 +1465,7 @@ void MyMesh::handleCmdFrame(size_t len) {
         result = sendCommandData(*recipient, msg_timestamp, attempt, text, est_timeout);
         expected_ack = 0; // no Ack expected
       } else {
-        result = sendMessage(*recipient, msg_timestamp, attempt, text, expected_ack, est_timeout);
+        result = sendMessageTracked(*recipient, msg_timestamp, attempt, text, expected_ack, est_timeout);
       }
       // TODO: add expected ACK to table
       if (result == MSG_SEND_FAILED) {
@@ -1477,7 +1483,7 @@ void MyMesh::handleCmdFrame(size_t len) {
         memcpy(&out_frame[2], &expected_ack, 4);
         memcpy(&out_frame[6], &est_timeout, 4);
         _serial->writeFrame(out_frame, 10);
-        if (_ui) {
+        if (_ui && txt_type != TXT_TYPE_CLI_DATA) {  // don't clutter the device message log with CLI data
           if (attempt > 0) {
             _ui->updateMsgLogRetry(text, recipient->name, _last_sent_hash, expected_ack);
           } else {
@@ -1498,6 +1504,7 @@ void MyMesh::handleCmdFrame(size_t len) {
     memcpy(&msg_timestamp, &cmd_frame[i], 4);
     i += 4;
     const char *text = (char *)&cmd_frame[i];
+    cmd_frame[len] = 0;  // ensure null terminated (addToMsgLog treats text as a C string)
 
     if (txt_type != TXT_TYPE_PLAIN) {
       writeErrFrame(ERR_CODE_UNSUPPORTED_CMD);
@@ -2361,10 +2368,17 @@ void MyMesh::handleCmdFrame(size_t len) {
     if (4 + (uint32_t)blob_len > len) {
       writeErrFrame(ERR_CODE_ILLEGAL_ARG);
     } else if (sync_id == SYNC_ID_SIGNAL_BARS) {
-      // Ephemeral action (not persisted): [action, target_id]; action 1 = ping target, else refresh all
+      // Ephemeral action (not persisted): [action, target_id]
+      //   action 0 = re-ping all known repeaters
+      //   action 1 = ping a specific repeater (target_id)
+      //   action 2 = start a discovery probe (find new repeaters)
       uint8_t action = (blob_len >= 1) ? cmd_frame[4] : 0;
       uint8_t target = (blob_len >= 2) ? cmd_frame[5] : 0;
-      if (_ui) _ui->requestSignalRefresh(action == 1 ? target : 0);
+      if (_ui) {
+        if (action == 2)      _ui->requestSignalProbe();
+        else if (action == 1) _ui->requestSignalRefresh(target);
+        else                  _ui->requestSignalRefresh(0);
+      }
       writeOKFrame();
     } else if (sync_id == SYNC_ID_MOTION_HINT) {
       // Ephemeral (not persisted): [version, level]
@@ -2387,14 +2401,11 @@ void MyMesh::handleCmdFrame(size_t len) {
     static const uint8_t known_ids[] = { SYNC_ID_NOTIF_PREFS, SYNC_ID_SIGNAL_BARS, SYNC_ID_MOTION_HINT };
     uint8_t count = 0;
     uint8_t count_pos = i++;  // reserve slot
-    uint8_t probe[4];
     for (uint8_t k = 0; k < sizeof(known_ids) / sizeof(known_ids[0]); k++) {
-      uint16_t l = _store->loadSyncBlob(known_ids[k], probe, sizeof(probe));
-      // emit only if a blob exists OR always emit known ids (here: always)
+      uint16_t l = _store->getSyncBlobLen(known_ids[k]);   // actual stored length (0 if no blob)
       out_frame[i++] = known_ids[k];
       memcpy(&out_frame[i], &l, 2); i += 2;
       count++;
-      (void)probe;
     }
     out_frame[count_pos] = count;
     _serial->writeFrame(out_frame, i);

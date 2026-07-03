@@ -628,6 +628,17 @@ static void make_sync_path(uint8_t sync_id, char* path, size_t path_size) {
   snprintf(path, path_size, "/sync_%02X", sync_id);
 }
 
+uint16_t DataStore::getSyncBlobLen(uint8_t sync_id) {
+  char path[16];
+  make_sync_path(sync_id, path, sizeof(path));
+  File file = openRead(_fs, path);
+  if (!file) return 0;
+  uint16_t stored_len = 0;
+  if (file.read((uint8_t*)&stored_len, 2) != 2) stored_len = 0;
+  file.close();
+  return stored_len;
+}
+
 uint16_t DataStore::loadSyncBlob(uint8_t sync_id, uint8_t* dest, uint16_t max_len) {
   char path[16];
   make_sync_path(sync_id, path, sizeof(path));
