@@ -567,6 +567,28 @@ class HomeScreen : public UIScreen {
     return matches == 1 ? buf : NULL;
   }
 
+  // Resolve a path-hop hash (from a message's stored path) to a unique contact.
+  // Message paths often carry only 1 byte per hop, which is ambiguous when two
+  // repeaters share that byte (e.g. 0xAB = ABBA and K5TDC). So: try the hop's own
+  // bytes first; if that's not unique, borrow a richer advertised hash from the
+  // matching signal-table entry (discovery gives repeaters 2-3 byte hashes). Returns
+  // 1 = unique (out filled), 0 = no match, 2 = ambiguous (don't guess a target).
+  int resolveRepeaterContact(const uint8_t* hash, uint8_t hash_len, ContactInfo& out) {
+    if (hash == NULL || hash_len == 0) return 0;
+    int m = the_mesh.lookupUniqueContact(hash, hash_len, out);
+    if (m == 1) return 1;
+    // Enrich short/ambiguous hops from the signal table (same first byte, more bytes).
+    for (uint8_t i = 0; i < _task->_signal_count; i++) {
+      AbstractUITask::SignalEntry& se = _task->_signals[i];
+      if (se.id == hash[0] && se.id_len > hash_len) {
+        int m2 = the_mesh.lookupUniqueContact(se.id_hash, se.id_len, out);
+        if (m2 == 1) return 1;
+        if (m2 >= 2) m = 2;
+      }
+    }
+    return m;  // 0 = none, 2 = ambiguous
+  }
+
   // Renders vertical battery icon (5px wide x 12px tall) at right_edge.
   // Returns new right_x (left edge of battery area) for further right-zone packing.
   int renderVerticalBattery(DisplayDriver& display, int right_edge, uint16_t batteryMilliVolts) {
@@ -1785,14 +1807,23 @@ public:
           }
           detail_count++;
 
-          // Multi-byte hash: show selected hop's full hash on a dedicated line.
-          // Only shown when a hop is selected (LEFT/RIGHT) AND hash size > 1 (1-byte already fully shown in Path).
-          if (phs > 1 && _path_sel >= 0 && _path_sel < entry.path_len) {
+          // When a hop is selected, show its identity on a dedicated line: the resolved
+          // repeater NAME if we can pin it down uniquely, else the full hash hex (with an
+          // "(ambig)" marker when a short prefix matches more than one contact).
+          if (_path_sel >= 0 && _path_sel < entry.path_len) {
             char* hp = detail_items[detail_count];
-            int hpos = snprintf(hp, sizeof(detail_items[0]), "Hop %d: ", _path_sel + 1);
-            for (uint8_t b = 0; b < phs; b++) {
-              hpos += snprintf(hp + hpos, sizeof(detail_items[0]) - hpos, "%02X",
-                               entry.path[_path_sel * phs + b]);
+            const uint8_t* hop_hash = &entry.path[_path_sel * phs];
+            ContactInfo hci;
+            int hm = resolveRepeaterContact(hop_hash, phs, hci);
+            if (hm == 1) {
+              snprintf(hp, sizeof(detail_items[0]), "Hop %d: %s", _path_sel + 1, hci.name);
+            } else {
+              int hpos = snprintf(hp, sizeof(detail_items[0]), "Hop %d: ", _path_sel + 1);
+              for (uint8_t b = 0; b < phs; b++) {
+                hpos += snprintf(hp + hpos, sizeof(detail_items[0]) - hpos, "%02X",
+                                 entry.path[_path_sel * phs + b]);
+              }
+              if (hm == 2) snprintf(hp + hpos, sizeof(detail_items[0]) - hpos, " (ambig)");
             }
             detail_count++;
           }
@@ -4741,38 +4772,31 @@ public:
             }
           }
           if (rpt_hash != 0) {
-            // Match contacts by prefix of pub_key (use full hash_size bytes for better accuracy in multi-byte mode)
+            // Resolve the hop to a UNIQUE contact (borrowing richer hash bytes from the
+            // signal table if the stored hop is a short/ambiguous 1-byte prefix).
             ContactInfo ci;
-            int n = the_mesh.getNumContacts();
-            bool found = false;
-            for (int i = 0; i < n; i++) {
-              if (the_mesh.getContactByIdx(i, ci) &&
-                  memcmp(ci.id.pub_key, full_hash, full_hash_size) == 0) {
-                uint32_t est_timeout;
-                int result = the_mesh.sendPathFind(ci, est_timeout);
-                if (result != MSG_SEND_FAILED) {
-                  _msg_detail = false;
-                  _path_sel = -1;
-                  _page = HomePage::TRACE;
-                  _page_active = true;
-                  _ct_path_pending = true;
-                  _ct_path_found = false;
-                  _ct_detail_scroll = 0;
-                  _ct_path_timeout = millis() + est_timeout + 2000;
-                  strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
-                  _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
-                  memcpy(_ct_path_key, ci.id.pub_key, PUB_KEY_SIZE);
-                  found = true;
-                } else {
-                  _task->showAlert("Send failed", 800);
-                  found = true;
-                }
-                break;
+            int m = resolveRepeaterContact(full_hash, full_hash_size, ci);
+            if (m == 1) {
+              uint32_t est_timeout;
+              int result = the_mesh.sendPathFind(ci, est_timeout);
+              if (result != MSG_SEND_FAILED) {
+                _msg_detail = false;
+                _path_sel = -1;
+                _page = HomePage::TRACE;
+                _page_active = true;
+                _ct_path_pending = true;
+                _ct_path_found = false;
+                _ct_detail_scroll = 0;
+                _ct_path_timeout = millis() + est_timeout + 2000;
+                strncpy(_ct_target_name, ci.name, sizeof(_ct_target_name));
+                _ct_target_name[sizeof(_ct_target_name) - 1] = '\0';
+                memcpy(_ct_path_key, ci.id.pub_key, PUB_KEY_SIZE);
+              } else {
+                _task->showAlert("Send failed", 800);
               }
-            }
-            if (!found) {
+            } else {
               char alert[24];
-              snprintf(alert, sizeof(alert), "Unknown repeater %02X", rpt_hash);
+              snprintf(alert, sizeof(alert), m == 0 ? "Unknown repeater %02X" : "Ambiguous ID %02X", rpt_hash);
               _task->showAlert(alert, 1000);
             }
           }
