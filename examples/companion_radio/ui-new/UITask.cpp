@@ -270,7 +270,8 @@ class HomeScreen : public UIScreen {
     bool valid;
     // Path info
     bool has_path_info;
-    uint8_t path_hops;
+    uint8_t path_hops;          // decoded hop count (0 = direct)
+    uint8_t path_hash_size;     // bytes per hop in path[] (1..3; 0 treated as 1)
     uint8_t path[MAX_PATH_SIZE];
     int16_t rssi;
     int8_t  snr_x4;
@@ -534,6 +535,17 @@ class HomeScreen : public UIScreen {
         return;
       }
     }
+  }
+
+  // Decode a contact's out_path_len (the encoded packet path_len byte: top 2 bits =
+  // hash_size-1, low 6 bits = hop count) into a plain hop count. Returns -1 when the
+  // path is unknown/flood-only (OUT_PATH_UNKNOWN). Optionally reports bytes-per-hop.
+  static int decodeOutPathHops(uint8_t out_path_len, uint8_t* hash_size_out = NULL) {
+    if (out_path_len == OUT_PATH_UNKNOWN) { if (hash_size_out) *hash_size_out = 1; return -1; }
+    uint8_t hop_count = out_path_len & 0x3F;
+    uint8_t hash_size = (out_path_len >> 6) + 1;
+    if (hash_size_out) *hash_size_out = hash_size;
+    return hop_count;
   }
 
   // Find contact by pub_key (stable across re-sorts)
@@ -2606,8 +2618,9 @@ public:
               // Hop hex chain
               char hops[48] = "";
               int pos = 0;
+              uint8_t cphs = cc->path_hash_size > 0 ? cc->path_hash_size : 1;
               for (int h = 0; h < cc->path_hops && pos < 44; h++) {
-                pos += snprintf(hops + pos, sizeof(hops) - pos, "%s%02X", h > 0 ? " " : "", cc->path[h]);
+                pos += snprintf(hops + pos, sizeof(hops) - pos, "%s%02X", h > 0 ? " " : "", cc->path[h * cphs]);
               }
               display.setColor(DisplayDriver::LIGHT);
               if (cy + 10 >= TOP_BAR_H && cy + 10 < display.height())
@@ -2709,8 +2722,9 @@ public:
             if (cc->path_hops > 0) {
               char hops[24] = "";
               int pos = 0;
+              uint8_t cphs = cc->path_hash_size > 0 ? cc->path_hash_size : 1;
               for (int h = 0; h < cc->path_hops && pos < 20; h++) {
-                pos += snprintf(hops + pos, sizeof(hops) - pos, "%s%02X", h > 0 ? " " : "", cc->path[h]);
+                pos += snprintf(hops + pos, sizeof(hops) - pos, "%s%02X", h > 0 ? " " : "", cc->path[h * cphs]);
               }
               snprintf(info_lines[0], sizeof(info_lines[0]), "Path: %s", hops);
             } else {
@@ -2798,17 +2812,20 @@ public:
               char line[48];
               bool is_fav = (ci.flags & 0x01) != 0;
               char suffix[12] = "";
+              // out_path_len is the encoded path_len byte; decode to a real hop count
+              // (>0 = hops, 0 = direct, <0 = unknown/flood).
+              int ci_hops = decodeOutPathHops(ci.out_path_len);
               if (ci.type == ADV_TYPE_REPEATER) {
-                if (ci.out_path_len > 0) snprintf(suffix, sizeof(suffix), "R:%d", ci.out_path_len);
-                else if (ci.out_path_len == 0) strcpy(suffix, "R:D");
+                if (ci_hops > 0) snprintf(suffix, sizeof(suffix), "R:%d", ci_hops);
+                else if (ci_hops == 0) strcpy(suffix, "R:D");
                 else strcpy(suffix, "R:?");
               } else if (ci.type == ADV_TYPE_ROOM) {
                 strcpy(suffix, "Rm");
               } else if (ci.type == ADV_TYPE_SENSOR) {
                 strcpy(suffix, "S");
               } else {
-                if (ci.out_path_len > 0) snprintf(suffix, sizeof(suffix), "%d", ci.out_path_len);
-                else if (ci.out_path_len == 0) strcpy(suffix, "D");
+                if (ci_hops > 0) snprintf(suffix, sizeof(suffix), "%d", ci_hops);
+                else if (ci_hops == 0) strcpy(suffix, "D");
                 else strcpy(suffix, "?");
               }
               snprintf(line, sizeof(line), "%s%s [%s]", is_fav ? "*" : "", ci.name, suffix);
@@ -6625,9 +6642,18 @@ void UITask::onPathUpdated(const ContactInfo& contact, int16_t rssi, int8_t snr_
   // Cache path info for this contact
   HomeScreen::ContactCache* cc = hs->findOrCreateCache(contact.id.pub_key);
   cc->has_path_info = true;
-  cc->path_hops = contact.out_path_len > 0 ? contact.out_path_len : 0;
-  if (contact.out_path_len > 0) {
-    memcpy(cc->path, contact.out_path, contact.out_path_len);
+  // out_path_len is the ENCODED path_len byte, not a hop count: decode hop count and
+  // per-hop hash size, and copy the real byte length (hops * hash_size), clamped.
+  uint8_t phs = 1;
+  int hops = HomeScreen::decodeOutPathHops(contact.out_path_len, &phs);
+  cc->path_hash_size = phs;
+  if (hops <= 0) {
+    cc->path_hops = 0;   // 0 = direct, -1 (unknown/flood) also shown as direct here
+  } else {
+    cc->path_hops = (uint8_t)hops;
+    uint16_t total = (uint16_t)hops * phs;
+    if (total > MAX_PATH_SIZE) total = MAX_PATH_SIZE;
+    memcpy(cc->path, contact.out_path, total);
   }
   cc->rssi = rssi;
   cc->snr_x4 = snr_x4;
