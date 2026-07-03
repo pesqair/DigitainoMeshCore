@@ -547,6 +547,26 @@ class HomeScreen : public UIScreen {
     return false;
   }
 
+  // Resolve a signal entry's contact name by matching as many advertised hash bytes
+  // as we captured (id_hash/id_len), not just the 1-byte id. A short prefix can be
+  // ambiguous (e.g. two repeaters both starting 0xAB), so we only return a name when
+  // exactly one contact matches — otherwise NULL, so we never show a wrong name.
+  const char* resolveSignalName(const AbstractUITask::SignalEntry& se, char* buf, size_t buflen) {
+    uint8_t mlen = (se.id_len >= 1 && se.id_len <= PUB_KEY_SIZE) ? se.id_len : 1;
+    const uint8_t* mkey = (se.id_len >= 1) ? se.id_hash : &se.id;
+    int n = the_mesh.getNumContacts();
+    int matches = 0;
+    ContactInfo ci;
+    for (int i = 0; i < n; i++) {
+      if (the_mesh.getContactByIdx(i, ci) && memcmp(ci.id.pub_key, mkey, mlen) == 0) {
+        if (++matches > 1) return NULL;  // ambiguous prefix — don't guess
+        strncpy(buf, ci.name, buflen - 1);
+        buf[buflen - 1] = '\0';
+      }
+    }
+    return matches == 1 ? buf : NULL;
+  }
+
   // Renders vertical battery icon (5px wide x 12px tall) at right_edge.
   // Returns new right_x (left edge of battery area) for further right-zone packing.
   int renderVerticalBattery(DisplayDriver& display, int right_edge, uint16_t batteryMilliVolts) {
@@ -3099,11 +3119,22 @@ public:
       if (_sig_action && _task->_signal_count > 0 && _sig_sel < _task->_signal_count) {
         // Action menu for selected signal
         AbstractUITask::SignalEntry& se = _task->_signals[_sig_sel];
-        ContactInfo* ci = the_mesh.lookupContactByPubKey(&se.id, 1);
-        if (ci && ci->name[0]) {
-          snprintf(tmp, sizeof(tmp), "<%02X> %s", se.id, ci->name);
+        // Build the captured hash hex (up to id_len bytes) for the header
+        char sig_hash_hex[9];
+        {
+          uint8_t hlen = (se.id_len >= 1 && se.id_len <= 4) ? se.id_len : 1;
+          int hp = 0;
+          for (uint8_t b = 0; b < hlen; b++) {
+            uint8_t hb = (se.id_len >= 1) ? se.id_hash[b] : se.id;
+            hp += snprintf(sig_hash_hex + hp, sizeof(sig_hash_hex) - hp, "%02X", hb);
+          }
+        }
+        char rpt_name_buf[32];
+        const char* rpt_name = resolveSignalName(se, rpt_name_buf, sizeof(rpt_name_buf));
+        if (rpt_name && rpt_name[0]) {
+          snprintf(tmp, sizeof(tmp), "<%s> %s", sig_hash_hex, rpt_name);
         } else {
-          snprintf(tmp, sizeof(tmp), "<%02X> Signal", se.id);
+          snprintf(tmp, sizeof(tmp), "<%s> Signal", sig_hash_hex);
         }
         display.setColor(DisplayDriver::YELLOW);
         display.drawTextEllipsized(0, TOP_BAR_H, display.width(), tmp);
