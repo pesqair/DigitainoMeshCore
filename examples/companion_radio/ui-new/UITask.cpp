@@ -132,6 +132,97 @@ static void savePresetsToFile() {
   }
 }
 
+// LiPo discharge curve (1S, resting voltage -> % capacity). The old linear 3.0-4.2V
+// map read optimistic through the flat mid-range and fell off a cliff below 3.7V.
+static int lipoBattPercent(uint16_t mv) {
+  static const struct { uint16_t mv; uint8_t pct; } curve[] = {
+    {4200,100},{4150,95},{4110,90},{4080,85},{4020,80},{3980,75},{3950,70},
+    {3910,65},{3870,60},{3850,55},{3840,50},{3820,45},{3800,40},{3790,35},
+    {3770,30},{3750,25},{3730,20},{3710,15},{3690,10},{3610,5},{3400,0}
+  };
+  const int n = sizeof(curve) / sizeof(curve[0]);
+  if (mv >= curve[0].mv) return 100;
+  for (int i = 1; i < n; i++) {
+    if (mv >= curve[i].mv) {   // linear interpolation within this segment
+      int span_mv = curve[i - 1].mv - curve[i].mv;
+      int span_pct = curve[i - 1].pct - curve[i].pct;
+      return curve[i].pct + (int)(mv - curve[i].mv) * span_pct / span_mv;
+    }
+  }
+  return 0;
+}
+
+// ----- Known-repeater cache persistence (learned hashes + watch flags) -----
+// Text file, one repeater per line: hex hash, then " W" if watched (e.g. "AB34C2 W").
+static void loadKnownRepeaters(AbstractUITask* t) {
+#if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
+  File f = InternalFS.open("/known_rpts.txt", FILE_O_READ);
+#elif defined(RP2040_PLATFORM)
+  File f = LittleFS.open("/known_rpts.txt", "r");
+#elif defined(ESP32)
+  File f = SPIFFS.open("/known_rpts.txt", "r", false);
+#else
+  File f;
+#endif
+  if (!f) return;
+  int idx = 0;
+  while (idx < KNOWN_RPT_MAX && f.available()) {
+    char line[16];
+    int len = 0;
+    while (len < (int)sizeof(line) - 1 && f.available()) {
+      char ch = f.read();
+      if (ch == '\n') break;
+      if (ch == '\r') continue;
+      line[len++] = ch;
+    }
+    line[len] = '\0';
+    // Parse hex bytes
+    auto& k = t->_known_rpts[idx];
+    uint8_t hl = 0;
+    int p = 0;
+    while (hl < 4 && isxdigit((unsigned char)line[p]) && isxdigit((unsigned char)line[p + 1])) {
+      char hx[3] = { line[p], line[p + 1], 0 };
+      k.hash[hl++] = (uint8_t)strtol(hx, NULL, 16);
+      p += 2;
+    }
+    if (hl >= 2) {
+      k.len = hl;
+      k.watched = (strchr(&line[p], 'W') != NULL) ? 1 : 0;
+      k.watch_state = 0;
+      k.last_alert = 0;
+      idx++;
+    }
+  }
+  f.close();
+  MESH_DEBUG_PRINTLN("Loaded %d known repeaters", idx);
+}
+
+static void saveKnownRepeaters(AbstractUITask* t) {
+#if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
+  InternalFS.remove("/known_rpts.txt");
+  File f = InternalFS.open("/known_rpts.txt", FILE_O_WRITE);
+#elif defined(RP2040_PLATFORM)
+  File f = LittleFS.open("/known_rpts.txt", "w");
+#elif defined(ESP32)
+  File f = SPIFFS.open("/known_rpts.txt", "w", true);
+#else
+  File f;
+#endif
+  if (!f) return;
+  for (int i = 0; i < KNOWN_RPT_MAX; i++) {
+    auto& k = t->_known_rpts[i];
+    if (k.len < 2) continue;
+    char line[16];
+    int p = 0;
+    for (uint8_t b = 0; b < k.len; b++) p += snprintf(line + p, sizeof(line) - p, "%02X", k.hash[b]);
+    if (k.watched) p += snprintf(line + p, sizeof(line) - p, " W");
+    f.print(line);
+    f.print('\n');
+  }
+  f.close();
+  MESH_DEBUG_PRINTLN("Saved known repeaters");
+}
+
 #include "icons.h"
 
 class SplashScreen : public UIScreen {
@@ -618,15 +709,7 @@ class HomeScreen : public UIScreen {
       return textX - 2;
     }
 
-#ifndef BATT_MIN_MILLIVOLTS
-  #define BATT_MIN_MILLIVOLTS 3000
-#endif
-#ifndef BATT_MAX_MILLIVOLTS
-  #define BATT_MAX_MILLIVOLTS 4200
-#endif
-    int pct = ((batteryMilliVolts - BATT_MIN_MILLIVOLTS) * 100) / (BATT_MAX_MILLIVOLTS - BATT_MIN_MILLIVOLTS);
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
+    int pct = lipoBattPercent(batteryMilliVolts);   // LiPo curve, not a linear map
 
     // Vertical battery: 5px wide x 12px tall (1px cap + 11px body)
     int bw = 5, bh = 11;
@@ -1453,15 +1536,7 @@ public:
       {
         uint16_t mv = _task->getBattMilliVolts();
         float volts = (float)mv / 1000.0f;
-#ifndef BATT_MIN_MILLIVOLTS
-  #define BATT_MIN_MILLIVOLTS 3000
-#endif
-#ifndef BATT_MAX_MILLIVOLTS
-  #define BATT_MAX_MILLIVOLTS 4200
-#endif
-        int pct = ((int)(mv - BATT_MIN_MILLIVOLTS) * 100) / (BATT_MAX_MILLIVOLTS - BATT_MIN_MILLIVOLTS);
-        if (pct < 0) pct = 0;
-        if (pct > 100) pct = 100;
+        int pct = lipoBattPercent(mv);   // LiPo curve, not a linear map
         snprintf(tmp, sizeof(tmp), "Batt: %.2fV %d%%", volts, pct);
         display.setColor(DisplayDriver::GREEN);
         display.drawTextCentered(cx, TOP_BAR_H + 20, tmp);
@@ -3175,11 +3250,13 @@ public:
         display.setColor(DisplayDriver::YELLOW);
         display.drawTextEllipsized(0, TOP_BAR_H, display.width(), tmp);
 
-        const char* items[8];
-        bool item_is_action[8];
+        const char* items[9];
+        bool item_is_action[9];
         int item_count = 0;
         items[item_count] = "Ping"; item_is_action[item_count++] = true;
         items[item_count] = "Delete"; item_is_action[item_count++] = true;
+        items[item_count] = _task->isWatchedSignal(se) ? "Unwatch" : "Watch";
+        item_is_action[item_count++] = true;
 
         static char sig_info[5][40];
         float rx_f = (float)se.rx_snr_x4 / 4.0f;
@@ -3211,7 +3288,7 @@ public:
         else snprintf(sig_info[4], sizeof(sig_info[4]), "Age: %lum", age_s / 60);
         items[item_count] = sig_info[4]; item_is_action[item_count++] = false;
 
-        if (_sig_action_sel >= 2) _sig_action_sel = 1;
+        if (_sig_action_sel >= 3) _sig_action_sel = 2;
         int max_scroll = item_count > 4 ? item_count - 4 : 0;
         if (_sig_detail_scroll > max_scroll) _sig_detail_scroll = max_scroll;
 
@@ -3269,6 +3346,10 @@ public:
               display.setColor(DisplayDriver::YELLOW);
               display.setCursor(0, y);
               display.print(">");
+            } else if (_task->isWatchedSignal(se)) {
+              // Watched marker: small dot in the selector column
+              display.setColor(DisplayDriver::GREEN);
+              display.fillRect(2, y + 3, 2, 2);
             }
 
             // Hex ID
@@ -4625,8 +4706,8 @@ public:
           return true;
         }
         if (c == KEY_DOWN) {
-          if (_sig_action_sel < 1) _sig_action_sel++;
-          else if (_sig_detail_scroll < 3) _sig_detail_scroll++;
+          if (_sig_action_sel < 2) _sig_action_sel++;
+          else if (_sig_detail_scroll < 4) _sig_detail_scroll++;
           return true;
         }
         if (c == KEY_ENTER) {
@@ -4655,6 +4736,19 @@ public:
             _task->_signal_count--;
             if (_task->_signal_cycle > 0) _task->_signal_cycle--;
             if (_sig_sel > 0 && _sig_sel >= _task->_signal_count) _sig_sel = _task->_signal_count - 1;
+            _sig_action = false;
+          } else if (_sig_action_sel == 2) {
+            // Watch/Unwatch: alert when this repeater's TX fails or it goes silent
+            AbstractUITask::SignalEntry& se = _task->_signals[_sig_sel];
+            if (_task->isWatchedSignal(se)) {
+              _task->setWatchedSignal(se, false);
+              _task->showAlert("Watch off", 800);
+            } else if (_task->setWatchedSignal(se, true)) {
+              _task->showAlert("Watching", 800);
+            } else {
+              // needs a confirmed multi-byte identity first (ambiguous 1-byte id)
+              _task->showAlert("Ping it first", 1000);
+            }
             _sig_action = false;
           }
           return true;
@@ -6148,6 +6242,21 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   _alert_expiry = 0;
 
   loadPresetsFromFile();
+  loadKnownRepeaters(this);
+
+#if defined(NRF52_PLATFORM)
+  // Hardware watchdog: reboot if the main loop wedges for 30s. It's clocked off
+  // LFCLK, so System OFF (hibernate) stops it, and the Adafruit bootloader feeds
+  // enabled WDT channels during DFU. The WDT survives soft resets — if it's already
+  // running, config writes are ignored but feeding RR[0] still works.
+  if (!NRF_WDT->RUNSTATUS) {
+    NRF_WDT->CONFIG = (WDT_CONFIG_SLEEP_Run << WDT_CONFIG_SLEEP_Pos) |
+                      (WDT_CONFIG_HALT_Pause << WDT_CONFIG_HALT_Pos);
+    NRF_WDT->CRV = 30 * 32768;   // 30 seconds
+    NRF_WDT->RREN = WDT_RREN_RR0_Msk;
+    NRF_WDT->TASKS_START = 1;
+  }
+#endif
 
   splash = new SplashScreen(this);
   home = new HomeScreen(this, &rtc_clock, sensors, node_prefs);
@@ -6161,6 +6270,29 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
 void UITask::showAlert(const char* text, int duration_millis) {
   strcpy(_alert, text);
   _alert_expiry = millis() + duration_millis;
+}
+
+// Toggle the repeater watch for a signal entry. Watching needs a confirmed multi-byte
+// identity (>= 3 hash bytes, or a 1-byte prefix that's unique in the contacts DB) —
+// we never watch a guess. Returns false if the identity is too ambiguous to watch.
+bool UITask::setWatchedSignal(const SignalEntry& se, bool on) {
+  const uint8_t* h = (se.id_len >= 1) ? se.id_hash : &se.id;
+  uint8_t hl = (se.id_len >= 1) ? se.id_len : 1;
+  ContactInfo ci;
+  if (hl < 3) {
+    if (the_mesh.lookupUniqueContact(h, hl, ci) == 1) { h = ci.id.pub_key; hl = 3; }
+    else if (on) return false;   // ambiguous/unknown — refuse
+  }
+  if (on) rememberRepeaterHash(h, hl);
+  int i = findKnownRepeater(h, hl);
+  if (i < 0) return false;
+  if (_known_rpts[i].watched != (on ? 1 : 0)) {
+    _known_rpts[i].watched = on ? 1 : 0;
+    _known_rpts[i].watch_state = 0;
+    _known_rpts[i].last_alert = 0;
+    _known_dirty = true;
+  }
+  return true;
 }
 
 void UITask::notify(UIEventType t) {
@@ -6578,6 +6710,16 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
         if (idx < 0 && _signal_count < SIGNAL_MAX) {
           idx = _signal_count++;
           setSignalHash(_signals[idx], &entry.repeat_path[r * hash_size], hash_size);
+          // Re-adopt a remembered multi-byte hash (from the persisted cache) so the
+          // entry doesn't start out ambiguous after pruning or a reboot. Only when
+          // exactly ONE cached repeater has this first byte — never guess.
+          {
+            int kidx = -1;
+            if (knownMatchesByFirstByte(rid, &kidx) == 1 &&
+                _known_rpts[kidx].len > _signals[idx].id_len) {
+              setSignalHash(_signals[idx], _known_rpts[kidx].hash, _known_rpts[kidx].len);
+            }
+          }
           _signals[idx].has_tx = false;
           _signals[idx].tx_failed = false;
           _signals[idx].tx_snr_x4 = 0;
@@ -6771,6 +6913,7 @@ void UITask::onPingResponse(uint32_t latency_ms, float snr_there, float snr_back
   } else if (_signals[idx].id_len < 3) {
     setSignalHash(_signals[idx], hs->_ct_path_key, 3);  // enrich a short/1-byte entry
   }
+  rememberRepeaterHash(hs->_ct_path_key, 3);   // persist: acked ping confirms identity
   _signals[idx].tx_snr_x4 = (int8_t)(snr_there * 4);
   _signals[idx].has_tx = true;
   _signals[idx].tx_failed = false;
@@ -6799,6 +6942,7 @@ void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, 
     // path's hash size). That lets the signal entry be told apart from another repeater
     // sharing the same first byte — otherwise a 1-byte entry is ambiguous and unpingable.
     uint8_t dhsz = pub_key_len >= 3 ? 3 : (pub_key_len >= 1 ? pub_key_len : 1);
+    rememberRepeaterHash(pub_key, dhsz);   // persist: discovery confirms identity
     // Find existing entry (keyed by first byte)
     int existing = -1;
     for (int i = 0; i < _signal_count; i++) {
@@ -6910,6 +7054,9 @@ bool UITask::isButtonPressed() const {
 }
 
 void UITask::loop() {
+#if defined(NRF52_PLATFORM)
+  NRF_WDT->RR[0] = WDT_RR_RR_Reload;   // feed the watchdog (started in begin())
+#endif
   char c = 0;
 #if UI_HAS_JOYSTICK
   int ev = user_btn.check();
@@ -7039,6 +7186,7 @@ void UITask::loop() {
               break;
             }
           }
+          rememberRepeaterHash(ci.id.pub_key, 3);   // persist the resolved identity
         } else {
           // Send failed — mark tx_failed on signal entry
           for (uint8_t i = 0; i < _signal_count; i++) {
@@ -7148,6 +7296,83 @@ void UITask::loop() {
   // in the status-bar render — so the Signals table can't go stale while the display
   // is off/asleep or the signal bars are hidden.
   pruneStaleSignals(300000UL / td);
+
+  // ----- Repeater watch: alert when a watched repeater degrades or recovers -----
+  static unsigned long next_watch_check = 0;
+  if (millis() >= next_watch_check) {
+    next_watch_check = millis() + 2000;
+    unsigned long silent_ms = 300000UL / td;  // same threshold that would have pruned it
+    for (int k = 0; k < KNOWN_RPT_MAX; k++) {
+      auto& kr = _known_rpts[k];
+      if (kr.len == 0 || !kr.watched) continue;
+      // Locate the live signal entry for this watched hash
+      int si = -1;
+      for (int s = 0; s < _signal_count; s++) {
+        if (_signals[s].id == kr.hash[0]) { si = s; break; }
+      }
+      uint8_t new_state;
+      if (si < 0 || millis() - _signals[si].last_heard > silent_ms) {
+        new_state = 3;                                  // silent: not hearing it at all
+      } else if (_signals[si].tx_failed) {
+        new_state = 2;                                  // heard, but pings failing
+      } else if (_signals[si].has_tx) {
+        new_state = 1;                                  // bidirectional OK
+      } else {
+        new_state = kr.watch_state;                     // indeterminate ("?"), keep last
+      }
+      if (new_state != kr.watch_state) {
+        bool was_bad = (kr.watch_state == 2 || kr.watch_state == 3);
+        bool is_bad = (new_state == 2 || new_state == 3);
+        bool announce = false;
+        if (kr.watch_state != 0 && is_bad && !was_bad &&
+            (kr.last_alert == 0 || millis() - kr.last_alert > 60000UL)) {
+          announce = true;   // degraded (rate-limited)
+        } else if (was_bad && !is_bad && kr.last_alert != 0) {
+          announce = true;   // recovered — only after we actually alerted the loss
+        }
+        kr.watch_state = new_state;
+        if (announce) {
+          kr.last_alert = millis();
+          // Resolve a display name (unique contact match), else hex
+          char nbuf[20];
+          ContactInfo wci;
+          if (the_mesh.lookupUniqueContact(kr.hash, kr.len, wci) == 1) {
+            strncpy(nbuf, wci.name, sizeof(nbuf) - 1);
+            nbuf[sizeof(nbuf) - 1] = '\0';
+          } else {
+            int p = 0;
+            for (uint8_t b = 0; b < kr.len && p + 2 < (int)sizeof(nbuf); b++)
+              p += snprintf(nbuf + p, sizeof(nbuf) - p, "%02X", kr.hash[b]);
+          }
+          char alert[40];
+          if (new_state == 3)      snprintf(alert, sizeof(alert), "Watch: %s SILENT", nbuf);
+          else if (new_state == 2) snprintf(alert, sizeof(alert), "Watch: %s TX FAIL", nbuf);
+          else                     snprintf(alert, sizeof(alert), "Watch: %s OK", nbuf);
+          if (_display != NULL && !_display->isOn()) _display->turnOn();
+          if (_display != NULL && _display->isOn()) {
+            _auto_off = millis() + AUTO_OFF_MILLIS;
+            _next_refresh = 100;
+          }
+          showAlert(alert, 2500);
+#ifdef PIN_BUZZER
+          if (is_bad) buzzer.play("watch:d=8,o=6,b=180:c7,p,c7,p,c7");
+          else        buzzer.play("watchok:d=16,o=6,b=160:c,e,g");
+#endif
+#ifdef PIN_VIBRATION
+          if (is_bad) vibration.trigger();
+#endif
+        }
+      }
+    }
+  }
+
+  // Persist the known-repeater cache when it changed (throttled to spare flash)
+  static unsigned long next_known_save = 0;
+  if (_known_dirty && millis() >= next_known_save) {
+    _known_dirty = false;
+    next_known_save = millis() + 30000;
+    saveKnownRepeaters(this);
+  }
 
   // Adaptive signal refresh (sweep every 30s when idle, auto_tx_enabled)
   // Best repeater: adaptive backoff (30s/60s/120s based on check count)

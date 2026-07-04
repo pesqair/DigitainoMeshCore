@@ -98,6 +98,84 @@ public:
   uint8_t _manual_ping_id = 0;  // non-zero = waiting for manual ping result from signal detail
   bool _pending_auto_probe = false;  // ambiguous auto-ping id — quiet discovery probe once queue drains
   unsigned long _next_auto_probe_time = 0;  // rate limit for ambiguity probes (>=120s apart)
+
+  // ----- Known-repeater cache (persisted): learned multi-byte hashes + watch flags -----
+  // Discovery/ping confirmations remember a repeater's 3-byte hash here so its identity
+  // survives table pruning and reboots — a recreated 1-byte entry re-adopts its hash
+  // instead of starting out ambiguous. Watched entries alert on TX loss (see UITask).
+  #define KNOWN_RPT_MAX 16
+  struct KnownRepeater {
+    uint8_t hash[4];
+    uint8_t len;               // valid bytes in hash (0 = free slot)
+    uint8_t watched;           // 1 = alert when this repeater's TX fails or it goes silent
+    uint8_t watch_state;       // runtime only: 0=unknown 1=ok 2=tx-fail 3=silent
+    unsigned long last_alert;  // runtime only: alert rate limit / recovery gating
+  };
+  KnownRepeater _known_rpts[KNOWN_RPT_MAX];
+  uint8_t _known_evict = 0;    // round-robin eviction cursor
+  bool _known_dirty = false;   // cache changed since last save
+
+  // Index of the cache entry matching this hash (prefix compare over min len), -1 if none.
+  int findKnownRepeater(const uint8_t* hash, uint8_t len) const {
+    if (hash == NULL || len == 0) return -1;
+    for (int i = 0; i < KNOWN_RPT_MAX; i++) {
+      const KnownRepeater& k = _known_rpts[i];
+      if (k.len == 0) continue;
+      uint8_t n = k.len < len ? k.len : len;
+      if (memcmp(k.hash, hash, n) == 0) return i;
+    }
+    return -1;
+  }
+
+  // Remember a CONFIRMED multi-byte hash (from a discovery response or an acked ping).
+  // Updates an existing entry in place (keeping its watched flag), else takes a free
+  // slot or evicts an unwatched one round-robin.
+  void rememberRepeaterHash(const uint8_t* hash, uint8_t len) {
+    if (hash == NULL || len < 2) return;   // a single byte adds no information
+    if (len > 4) len = 4;
+    int i = findKnownRepeater(hash, len);
+    if (i >= 0) {
+      if (len > _known_rpts[i].len) {
+        memcpy(_known_rpts[i].hash, hash, len);
+        _known_rpts[i].len = len;
+        _known_dirty = true;
+      }
+      return;
+    }
+    for (int f = 0; f < KNOWN_RPT_MAX; f++) {
+      if (_known_rpts[f].len == 0) { i = f; break; }
+    }
+    if (i < 0) {  // no free slot — evict an unwatched one
+      for (int t = 0; t < KNOWN_RPT_MAX; t++) {
+        uint8_t c = (uint8_t)((_known_evict + t) % KNOWN_RPT_MAX);
+        if (!_known_rpts[c].watched) { i = c; _known_evict = (uint8_t)((c + 1) % KNOWN_RPT_MAX); break; }
+      }
+    }
+    if (i < 0) return;  // every slot watched (unlikely)
+    memcpy(_known_rpts[i].hash, hash, len);
+    _known_rpts[i].len = len;
+    _known_rpts[i].watched = 0;
+    _known_rpts[i].watch_state = 0;
+    _known_rpts[i].last_alert = 0;
+    _known_dirty = true;
+  }
+
+  // How many cached repeaters start with this byte; fills idx_out with the last match.
+  int knownMatchesByFirstByte(uint8_t b, int* idx_out = NULL) const {
+    int n = 0;
+    for (int i = 0; i < KNOWN_RPT_MAX; i++) {
+      if (_known_rpts[i].len > 0 && _known_rpts[i].hash[0] == b) { n++; if (idx_out) *idx_out = i; }
+    }
+    return n;
+  }
+
+  // True if this signal entry matches a watched cache entry.
+  bool isWatchedSignal(const SignalEntry& e) const {
+    const uint8_t* h = (e.id_len >= 1) ? e.id_hash : &e.id;
+    uint8_t hl = (e.id_len >= 1) ? e.id_len : 1;
+    int i = findKnownRepeater(h, hl);
+    return i >= 0 && _known_rpts[i].watched != 0;
+  }
   unsigned long _discovery_sweep_time = 0;  // next periodic discovery while in motion
 
   // Signal probe state
@@ -140,10 +218,11 @@ public:
 
   // Drop entries not heard within prune_ms. Called from UITask::loop() every pass
   // (not just from the status-bar render) so the table can't go stale while the
-  // display is off or the signal bars are hidden.
+  // display is off or the signal bars are hidden. Watched repeaters are exempt —
+  // their growing age (and the watch alert) IS the information.
   void pruneStaleSignals(unsigned long prune_ms) {
     for (int i = 0; i < _signal_count; ) {
-      if (millis() - _signals[i].last_heard > prune_ms) {
+      if (millis() - _signals[i].last_heard > prune_ms && !isWatchedSignal(_signals[i])) {
         for (int j = i; j < _signal_count - 1; j++) _signals[j] = _signals[j + 1];
         _signal_count--;
         if (_signal_cycle >= _signal_count && _signal_count > 0) _signal_cycle = 0;

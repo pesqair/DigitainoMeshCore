@@ -159,6 +159,7 @@ public:
   void onPingResponse(uint32_t latency_ms, float snr_there, float snr_back) override;
   void onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, uint8_t path_len, const uint8_t* pub_key, uint8_t pub_key_len) override;
   void showAlert(const char* text, int duration_millis);
+  bool setWatchedSignal(const SignalEntry& se, bool on);  // repeater watch toggle (persisted)
   int  getMsgCount() const { return _unread_ui; }
   void clearUnread() { _unread_ui = 0; }
   bool hasDisplay() const { return _display != NULL; }
