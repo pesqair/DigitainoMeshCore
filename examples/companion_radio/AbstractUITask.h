@@ -96,6 +96,8 @@ public:
 
   uint8_t _td = 1;              // current motion timing divisor (1/2/4), updated each loop
   uint8_t _manual_ping_id = 0;  // non-zero = waiting for manual ping result from signal detail
+  bool _pending_auto_probe = false;  // ambiguous auto-ping id — quiet discovery probe once queue drains
+  unsigned long _next_auto_probe_time = 0;  // rate limit for ambiguity probes (>=120s apart)
   unsigned long _discovery_sweep_time = 0;  // next periodic discovery while in motion
 
   // Signal probe state

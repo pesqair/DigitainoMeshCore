@@ -6613,6 +6613,11 @@ void UITask::matchRxPacket(const uint8_t* packet_hash, uint8_t path_len, const u
         }
       }
       if (was_empty && _auto_ping_queue_count > 0) {
+        // Starting a fresh cycle: reset the cursor too. Without this, a stale
+        // _auto_ping_next (left over from the last drained cycle) makes
+        // `next < count` fail and the drain check silently drops the queue —
+        // packet-heard repeaters would never get their TX check.
+        _auto_ping_next = 0;
         _auto_ping_next_time = millis() + 500;  // start pinging after brief delay
       }
       break;
@@ -6801,7 +6806,16 @@ void UITask::onDiscoverResponse(uint8_t node_type, int8_t snr_x4, int16_t rssi, 
     }
     if (existing >= 0) {
       // Enrich the stored hash if discovery now gives us more bytes than before
-      if (dhsz > _signals[existing].id_len) setSignalHash(_signals[existing], pub_key, dhsz);
+      if (dhsz > _signals[existing].id_len) {
+        setSignalHash(_signals[existing], pub_key, dhsz);
+        // The richer hash may resolve an entry that couldn't be pinged before (the
+        // whole point of an ambiguity probe) — queue a TX check right away instead
+        // of waiting out the sweep backoff.
+        if (!_signals[existing].has_tx && _auto_ping_queue_count < AUTO_PING_QUEUE_MAX) {
+          _signals[existing].last_ping_time = 0;
+          _auto_ping_queue[_auto_ping_queue_count++] = id;
+        }
+      }
     } else if (_signal_count < SIGNAL_MAX && _auto_ping_queue_count < AUTO_PING_QUEUE_MAX) {
       setSignalHash(_signals[_signal_count], pub_key, dhsz);
       _signals[_signal_count].rx_snr_x4 = snr_x4;
@@ -7015,9 +7029,15 @@ void UITask::loop() {
           _auto_ping_pending = true;
           _auto_ping_current_id = hash;
           _auto_ping_timeout = millis() + est_timeout + 2000;
-          // Record ping time on the signal entry
+          // Record ping time on the signal entry, and adopt the resolved contact's
+          // pub_key prefix (3 bytes) — the entry then stays unambiguous even after
+          // it's pruned and recreated from a 1-byte path hop.
           for (uint8_t i = 0; i < _signal_count; i++) {
-            if (_signals[i].id == hash) { _signals[i].last_ping_time = millis(); break; }
+            if (_signals[i].id == hash) {
+              _signals[i].last_ping_time = millis();
+              if (_signals[i].id_len < 3) setSignalHash(_signals[i], ci.id.pub_key, 3);
+              break;
+            }
           }
         } else {
           // Send failed — mark tx_failed on signal entry
@@ -7038,19 +7058,21 @@ void UITask::loop() {
         }
       } else {
         // No unique contact for this hash — either unknown, or an ambiguous same-prefix
-        // ID we can't safely disambiguate. Mark the entry so it isn't retried tightly.
+        // ID we can't safely disambiguate. No ping was actually sent, so this is NOT a
+        // TX failure: leave TX as "?" (don't set tx_failed / bump the fail backoff, or
+        // reachable repeaters converge to a permanent "X"). Stamp last_ping_time so the
+        // sweep doesn't re-queue it tightly, and for ambiguous ids schedule a quiet
+        // discovery probe — discovery carries the full pub_key, so the enriched entry
+        // resolves on the next cycle.
         for (uint8_t i = 0; i < _signal_count; i++) {
           if (_signals[i].id == hash) {
-            _signals[i].tx_failed = true;
-            _signals[i].fail_count++;
-            _signals[i].last_fail_time = millis();
+            _signals[i].last_ping_time = millis();
             break;
           }
         }
+        if (matches >= 2) _pending_auto_probe = true;
         if (_manual_ping_id == hash) {
-          // Ambiguous: kick a discovery probe to enrich this entry's hash (discovery
-          // carries the full pub_key), so a retry can pin the repeater down.
-          if (matches >= 2) { showAlert("Resolving repeater...", 1200); requestSignalProbe(); }
+          if (matches >= 2) { showAlert("Resolving repeater...", 1200); }
           else              { showAlert("Ping: no contact", 1200); }
           _manual_ping_id = 0;
         }
@@ -7084,6 +7106,17 @@ void UITask::loop() {
   // Auto-ping queue fully drained — reset so probe can re-trigger
   if (_auto_ping_queue_count > 0 && _auto_ping_next >= _auto_ping_queue_count && !_auto_ping_pending) {
     _auto_ping_queue_count = 0;
+  }
+
+  // An auto-ping hit an ambiguous short hash — run a quiet discovery probe once the
+  // queue is idle so the entry gets enriched with more hash bytes (full pub_key) and
+  // the next ping cycle can resolve it to a unique contact. Rate-limited to one
+  // probe per 2 min so an unresolvable entry can't spam discovery scans.
+  if (_pending_auto_probe && _auto_ping_queue_count == 0 && !_auto_ping_pending &&
+      !_probe_active && millis() >= _next_auto_probe_time) {
+    _pending_auto_probe = false;
+    _next_auto_probe_time = millis() + 120000UL;
+    startSignalProbe(false);
   }
 
   // Speed-adaptive timing divisor
@@ -7135,16 +7168,21 @@ void UITask::loop() {
 
     // Adaptive interval for best: 60s (checks 0-3), 120s (4-7), 300s (8+)
     unsigned long best_interval = _best_ping_count < 4 ? 60000UL / td : _best_ping_count < 8 ? 120000UL / td : 300000UL / td;
-    // Backoff interval for failed pings: 60s, 120s, then stop retrying
+    // Backoff interval for failed pings: 60s, 120s, then a slow 300s lane — never stop
+    // outright: we only keep entries we're actively hearing (RX), and a repeater we can
+    // hear is worth re-checking (a permanent "X" would otherwise never clear).
     unsigned long fail_interval = _signals[best].fail_count < 2 ? 60000UL / td :
-                                  _signals[best].fail_count < 4 ? 120000UL / td : 0UL;
+                                  _signals[best].fail_count < 4 ? 120000UL / td : 300000UL / td;
     unsigned long best_age = millis() - _signals[best].last_heard;
     unsigned long tx_age = _signals[best].last_ping_time > 0 ? millis() - _signals[best].last_ping_time : 999999UL;
     if (best_age < 300000UL / td) {
       bool retry_failed = _signals[best].tx_failed && fail_interval > 0 &&
                           (millis() - _signals[best].last_fail_time > fail_interval);
       bool refresh_stale = tx_age > best_interval && _signals[best].has_tx;
-      bool never_checked = !_signals[best].has_tx && !_signals[best].tx_failed;
+      // tx_age guard: an unresolvable (ambiguous/unknown) entry stamps last_ping_time
+      // without setting tx_failed, so don't re-queue it on every sweep
+      bool never_checked = !_signals[best].has_tx && !_signals[best].tx_failed &&
+                           tx_age > 60000UL / td;
       if (retry_failed || refresh_stale || never_checked) {
         _signals[best].tx_failed = false;
         _signals[best].has_tx = false;
@@ -7159,12 +7197,15 @@ void UITask::loop() {
       unsigned long age = millis() - _signals[i].last_heard;
       if (age >= 300000UL / td) continue;  // too old, will be pruned
       unsigned long fi = _signals[i].fail_count < 2 ? 60000UL / td :
-                         _signals[i].fail_count < 4 ? 120000UL / td : 0UL;
+                         _signals[i].fail_count < 4 ? 120000UL / td : 300000UL / td;
       bool retry_failed = _signals[i].tx_failed && fi > 0 &&
                           (millis() - _signals[i].last_fail_time > fi);
       unsigned long txa = _signals[i].last_ping_time > 0 ? millis() - _signals[i].last_ping_time : 999999UL;
       bool refresh_stale = txa > 120000UL / td && _signals[i].has_tx;
-      bool never_checked = !_signals[i].has_tx && !_signals[i].tx_failed;
+      // txa guard: unresolvable entries stamp last_ping_time without tx_failed —
+      // back off instead of re-queueing them on every sweep
+      bool never_checked = !_signals[i].has_tx && !_signals[i].tx_failed &&
+                           txa > 120000UL / td;
       if (retry_failed || refresh_stale || never_checked) {
         _signals[i].tx_failed = false;
         _signals[i].has_tx = false;
