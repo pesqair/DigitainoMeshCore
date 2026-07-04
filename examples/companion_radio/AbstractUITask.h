@@ -136,6 +136,21 @@ public:
     e.id = hash[0];
   }
 
+  // Drop entries not heard within prune_ms. Called from UITask::loop() every pass
+  // (not just from the status-bar render) so the table can't go stale while the
+  // display is off or the signal bars are hidden.
+  void pruneStaleSignals(unsigned long prune_ms) {
+    for (int i = 0; i < _signal_count; ) {
+      if (millis() - _signals[i].last_heard > prune_ms) {
+        for (int j = i; j < _signal_count - 1; j++) _signals[j] = _signals[j + 1];
+        _signal_count--;
+        if (_signal_cycle >= _signal_count && _signal_count > 0) _signal_cycle = 0;
+      } else {
+        i++;
+      }
+    }
+  }
+
   // ----- Unified signal-bar scoring (shared by OLED + companion app) -----
   // Score in snr_x4 units. Bidirectional links: 0.6*TX + 0.4*RX, but if either
   // leg is <= -10 dB (-40 in x4) the link is ranked by its dead leg (weak-leg guard).

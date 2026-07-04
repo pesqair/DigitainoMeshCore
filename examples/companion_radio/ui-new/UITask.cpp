@@ -713,21 +713,9 @@ class HomeScreen : public UIScreen {
       { uint8_t pd = _task->phoneMotionDivisor(); if (pd > ptd) ptd = pd; }
       prune_ms /= ptd;
 
-      // Prune stale entries (>prune_ms since last heard)
-      for (int i = 0; i < _task->_signal_count; ) {
-        if (millis() - _task->_signals[i].last_heard > prune_ms) {
-          // Shift remaining entries down
-          for (int j = i; j < _task->_signal_count - 1; j++) {
-            _task->_signals[j] = _task->_signals[j + 1];
-          }
-          _task->_signal_count--;
-          if (_task->_signal_cycle >= _task->_signal_count && _task->_signal_count > 0) {
-            _task->_signal_cycle = 0;
-          }
-        } else {
-          i++;
-        }
-      }
+      // Prune stale entries (>prune_ms since last heard). UITask::loop() also prunes
+      // every pass; this keeps the bars honest within a single frame too.
+      _task->pruneStaleSignals(prune_ms);
 
       bool use_cycling = _task->_signal_count > 0 &&
                          (millis() - _task->_signal_time) / 1000 < (prune_ms / 1000);
@@ -3361,11 +3349,10 @@ public:
               }
             }
 
-            // Packet counts (rx/tx — matches bar order)
+            // Packet counts (rx/tx — matches bar order), clamped to the age column
             display.setColor(sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
             snprintf(tmp, sizeof(tmp), "%u/%u", se.rx_count, se.tx_count);
-            display.setCursor(col_cnt, y);
-            display.print(tmp);
+            display.drawTextEllipsized(col_cnt, y, col_age - col_cnt - 2, tmp);
 
             // Age
             {
@@ -3511,8 +3498,7 @@ public:
         int y = TOP_BAR_H + 10;
         for (int i = _pkt_detail_scroll; i < _pkt_detail_scroll + detail_visible && i < detail_count; i++, y += 10) {
           display.setColor(DisplayDriver::LIGHT);
-          display.setCursor(0, y);
-          display.print(detail_items[i]);
+          display.drawTextEllipsized(0, y, display.width(), detail_items[i]);
         }
 
       } else {
@@ -3564,8 +3550,7 @@ public:
             char marker = (item == _pkt_sel && !_sb_active) ? '>' : ' ';
             snprintf(tmp, sizeof(tmp), "%c%s %02X %d/%.1f %s", marker, type_str, pkt.first_hop, pkt.rssi, snr_f, age_buf);
             display.setColor(item == _pkt_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
-            display.setCursor(0, y);
-            display.print(tmp);
+            display.drawTextEllipsized(0, y, display.width(), tmp);
           }
         }
       }
@@ -5610,11 +5595,11 @@ public:
 
     display.drawRect(0, 11, display.width(), 1);  // horiz line
 
-    display.setCursor(0, 14);
     display.setColor(DisplayDriver::YELLOW);
     char filtered_origin[sizeof(p->origin)];
     display.translateUTF8ToBlocks(filtered_origin, p->origin, sizeof(filtered_origin));
-    display.print(filtered_origin);
+    // Ellipsize: a long sender name must not wrap onto the message text below
+    display.drawTextEllipsized(0, 14, display.width(), filtered_origin);
 
     display.setCursor(0, 25);
     display.setColor(DisplayDriver::LIGHT);
@@ -5977,9 +5962,9 @@ public:
           display.print(">");
         }
         display.setColor(i == _contact_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
-        display.setCursor(8, y);
         if (the_mesh.getContactByIdx(_filtered[i], ci)) {
-          display.print(ci.name);
+          // Ellipsize: a long name must not wrap onto the row below
+          display.drawTextEllipsized(8, y, display.width() - 8, ci.name);
         }
       }
     }
@@ -6066,15 +6051,15 @@ public:
           display.print(">");
         }
         display.setColor(i == _channel_sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
-        display.setCursor(8, y);
         ChannelDetails cd;
         if (the_mesh.getChannel(i, cd)) {
+          // Ellipsize: a long channel name must not wrap onto the row below
           if (cd.name[0] == '#') {
-            display.print(cd.name);
+            display.drawTextEllipsized(8, y, display.width() - 8, cd.name);
           } else {
             char label[36];
             snprintf(label, sizeof(label), "#%s", cd.name);
-            display.print(label);
+            display.drawTextEllipsized(8, y, display.width() - 8, label);
           }
         }
       }
@@ -7125,6 +7110,11 @@ void UITask::loop() {
   _td = td;  // GPS-derived tier (kept pure so the hysteresis above stays stable)
   // Phone motion hint (companion app) boosts ping cadence when the radio's GPS is off/idle
   { uint8_t pd = phoneMotionDivisor(); if (pd > td) td = pd; }
+
+  // Prune signal entries not heard within 5 min (scaled by motion). Done here — not
+  // in the status-bar render — so the Signals table can't go stale while the display
+  // is off/asleep or the signal bars are hidden.
+  pruneStaleSignals(300000UL / td);
 
   // Adaptive signal refresh (sweep every 30s when idle, auto_tx_enabled)
   // Best repeater: adaptive backoff (30s/60s/120s based on check count)
